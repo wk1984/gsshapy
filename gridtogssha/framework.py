@@ -694,30 +694,21 @@ class GSSHAFramework(object):
         mapping_table_card = self.project_manager.getCard('MAPPING_TABLE')
         if mapping_table_card:
             # read in mapping table
-            map_table_filepath = mapping_table_card.value.strip('"').strip("'")
-            map_table_filename = os.path.basename(map_table_filepath)
-            map_table_root_name, map_table_extension = os.path.splitext(map_table_filename)
-            
-            map_table_object = self.project_manager.INPUT_FILES['MAPPING_TABLE']()
-            map_table_object.projectFile = self.project_manager
-            map_table_object._read(self.gssha_directory, 
-                                   map_table_filename, 
-                                   self.db_session, 
-                                   map_table_filepath, 
-                                   map_table_root_name, 
-                                   map_table_extension,
-                                   readIndexMaps=False)
+            self.project_manager._readXput(fileCards={'MAPPING_TABLE': self.project_manager.INPUT_FILES['MAPPING_TABLE']},
+                                           directory=self.gssha_directory,
+                                           session=self.db_session)
      
             # connect index maps to main gssha directory
-            for indexMap in map_table_object.indexMaps:
+            for indexMap in self.project_manager.mapTableFile.indexMaps:
                 indexMap.filename = os.path.join("..", os.path.basename(indexMap.filename))
                 
             # write copy of mapping table to working directory
+            map_table_filename = os.path.basename(mapping_table_card.value.strip('"').strip("'"))
             mapping_table_new_path = os.path.join(working_directory, map_table_filename)
             with open(mapping_table_new_path, 'w') as mapping_table_open_file:
-                map_table_object._write(session=self.db_session,
-                                        openFile=mapping_table_open_file,
-                                        writeIndexMaps=False)
+                self.project_manager.mapTableFile._write(session=self.db_session,
+                                                         openFile=mapping_table_open_file,
+                                                         writeIndexMaps=True)
 
         # connect to other output files in main gssha directory
         for gssha_card in self.project_manager.projectCards:

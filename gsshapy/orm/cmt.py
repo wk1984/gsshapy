@@ -67,8 +67,7 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
         GsshaPyFileObjectBase.__init__(self)
 
     def _read(self, directory, filename, session, path, name, extension,
-              spatial=False, spatialReferenceID=4236, replaceParamFile=None,
-              readIndexMaps=True):
+              spatial=False, spatialReferenceID=4236, replaceParamFile=None):
         """
         Mapping Table Read from File Method
         """
@@ -123,13 +122,9 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
                     # Associate IndexMap with MapTableFile 
                     indexMap.mapTableFile = self
                     
-                    if readIndexMaps:
-                        # Invoke IndexMap read method
-                        indexMap.read(directory=directory, filename=result['filename'], session=session, 
-                                      spatial=spatial, spatialReferenceID=spatialReferenceID)
-                    else:
-                        # add path to file
-                        indexMap.filename = result['filename']
+                    # Invoke IndexMap read method
+                    indexMap.read(directory=directory, filename=result['filename'], session=session, 
+                                  spatial=spatial, spatialReferenceID=spatialReferenceID)
 
                 # Map Table handler
                 else:
