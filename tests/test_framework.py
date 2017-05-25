@@ -1,18 +1,18 @@
-'''
+"""
 ********************************************************************************
 * Name: Framework Tests
 * Author: Alan D. Snow
 * Created On: November 22, 2016
 * License: BSD 3-Clause
 ********************************************************************************
-'''
+"""
 from datetime import datetime, timedelta
 import os
 import unittest
 from shutil import copytree
 
 from .template import TestGridTemplate
-from gsshapy.modeling import GSSHA_WRF_Framework
+from gsshapy.modeling import GSSHAWRFFramework
 from RAPIDpy.helper_functions import compare_csv_timeseries_files
 
 SCRIPT_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -57,17 +57,17 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 # -----------------------------------------------------------------------------
 
     def test_rapid_to_gssha(self):
-        '''
+        """
         Test RAPID to GSSHA functionality
-        '''
+        """
 
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 path_to_rapid_qout=self.path_to_rapid_qout,
-                                 connection_list_file=self.connection_list_file
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               path_to_rapid_qout=self.path_to_rapid_qout,
+                               connection_list_file=self.connection_list_file
+                               )
 
         gr.run_forecast()
 
@@ -82,6 +82,11 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         assert compare_csv_timeseries_files(self._generated_file_path('run_200208291800to200208311800', extension='ihg'),
                                             compare_igh_file,
                                             header=False)
+
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_rapid_200208291800to200208311800.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
+
         # grid_standard.cmt
         # 1 file in main directory not modified
         self._compare_files(os.path.join(self.readDirectory, "gssha_project", "grid_standard.cmt"),
@@ -91,17 +96,17 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         # 3 TODO: Check to make sure generated correctly
 
     def test_rapid_to_gssha_write_hotstart(self):
-        '''
+        """
         Test RAPID to GSSHA functionality write hotstart
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 path_to_rapid_qout=self.path_to_rapid_qout,
-                                 connection_list_file=self.connection_list_file,
-                                 write_hotstart=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               path_to_rapid_qout=self.path_to_rapid_qout,
+                               connection_list_file=self.connection_list_file,
+                               write_hotstart=True,
+                               )
         gr.run_forecast()
 
         # check folders exist
@@ -118,6 +123,10 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         assert compare_csv_timeseries_files(self._generated_file_path('run_200208291800to200208311800', extension='ihg'),
                                             compare_igh_file, header=False)
 
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_rapid_200208291800to200208311800.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
+
         # grid_standard.cmt
         # 1 file in main directory not modified
         self._compare_files(os.path.join(self.readDirectory, "gssha_project", "grid_standard.cmt"),
@@ -127,17 +136,17 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         # 3 TODO: Check to make sure generated correctly
 
     def test_rapid_to_gssha_read_hotstart(self):
-        '''
+        """
         Test RAPID to GSSHA functionality read hotstart
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 path_to_rapid_qout=self.path_to_rapid_qout,
-                                 connection_list_file=self.connection_list_file,
-                                 read_hotstart=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               path_to_rapid_qout=self.path_to_rapid_qout,
+                               connection_list_file=self.connection_list_file,
+                               read_hotstart=True,
+                               )
         gr.run_forecast()
 
         # COMPARE FILES
@@ -160,19 +169,19 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         # 3 TODO: Check to make sure generated correctly
 
     def test_rapid_to_gssha_date_range(self):
-        '''
+        """
         Test RAPID to GSSHA functionality with date filters
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable="",
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 path_to_rapid_qout=self.path_to_rapid_qout,
-                                 connection_list_file=self.connection_list_file,
-                                 gssha_simulation_start=datetime(2002,8,30),
-                                 gssha_simulation_end=datetime(2002,8,30,23,59),
-                                 read_hotstart=True,  # SHOULD NOT CHANGE ANYTHING
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable="",
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               path_to_rapid_qout=self.path_to_rapid_qout,
+                               connection_list_file=self.connection_list_file,
+                               gssha_simulation_start=datetime(2002,8,30),
+                               gssha_simulation_end=datetime(2002,8,30,23,59),
+                               read_hotstart=True,  # SHOULD NOT CHANGE ANYTHING
+                               )
 
         gr.run_forecast()
 
@@ -195,20 +204,20 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         # 3 TODO: Check to make sure generated correctly
 
     def test_rapid_to_gssha_date_range_hotstart(self):
-        '''
+        """
         Test RAPID to GSSHA functionality with date filters
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable="",
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 path_to_rapid_qout=self.path_to_rapid_qout,
-                                 connection_list_file=self.connection_list_file,
-                                 gssha_simulation_start=datetime(2002,8,30),
-                                 gssha_simulation_end=datetime(2002,8,30,23,59),
-                                 read_hotstart=True,
-                                 write_hotstart=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable="",
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               path_to_rapid_qout=self.path_to_rapid_qout,
+                               connection_list_file=self.connection_list_file,
+                               gssha_simulation_start=datetime(2002,8,30),
+                               gssha_simulation_end=datetime(2002,8,30,23,59),
+                               read_hotstart=True,
+                               write_hotstart=True,
+                               )
 
         gr.run_forecast()
 
@@ -235,19 +244,19 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         # 3 TODO: Check to make sure generated correctly
 
     def test_rapid_to_gssha_min_hotstart(self):
-        '''
+        """
         Test RAPID to GSSHA functionality with minmal mode hotstart generation
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable="",
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 path_to_rapid_qout=self.path_to_rapid_qout,
-                                 connection_list_file=self.connection_list_file,
-                                 gssha_simulation_duration=timedelta(seconds=6*3600),
-                                 write_hotstart=True,
-                                 hotstart_minimal_mode=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable="",
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               path_to_rapid_qout=self.path_to_rapid_qout,
+                               connection_list_file=self.connection_list_file,
+                               gssha_simulation_duration=timedelta(seconds=6*3600),
+                               write_hotstart=True,
+                               hotstart_minimal_mode=True,
+                               )
         gr.run_forecast()
 
         # check folder exists
@@ -264,6 +273,9 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
         assert compare_csv_timeseries_files(self._generated_file_path('minimal_hotstart_run_200208291800to200208300000', extension='ihg'),
                                             compare_igh_file, header=False)
 
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_rapid_hotstart_200208291800to200208300000.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
         # grid_standard.cmt
         # 1 file in main directory not modified
         self._compare_files(os.path.join(self.readDirectory, "gssha_project", "grid_standard.cmt"),
@@ -277,16 +289,15 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 # -----------------------------------------------------------------------------
 
     def test_wrf_to_gssha(self):
-        '''
+        """
         Test WRF to GSSHA functionality
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 lsm_folder=self.lsm_folder,
-                                 lsm_file_date_naming_convention=self.lsm_file_date_naming_convention,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               lsm_folder=self.lsm_folder,
+                               )
 
         gr.run_forecast()
 
@@ -306,7 +317,12 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
         # grid_standard.gag
         self._compare_files(os.path.join(self.readDirectory, "framework", "grid_standard_wrf_201608231600to201608240700.gag"),
-                            self._generated_file_path('run_201608231600to201608240700', extension="gag"))
+                            self._generated_file_path('run_201608231600to201608240700', extension="gag"),
+                            precision=5)
+
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_wrf_201608231600to201608240700.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
 
         # compare HMET files
         compare_directory = os.path.join(self.readDirectory,
@@ -322,17 +338,16 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
 
     def test_wrf_to_gssha_write_hotstart(self):
-        '''
+        """
         Test WRF to GSSHA functionality write hotstart
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 lsm_folder=self.lsm_folder,
-                                 lsm_file_date_naming_convention=self.lsm_file_date_naming_convention,
-                                 write_hotstart=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               lsm_folder=self.lsm_folder,
+                               write_hotstart=True,
+                               )
 
         gr.run_forecast()
 
@@ -352,7 +367,12 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
         # grid_standard.gag
         self._compare_files(os.path.join(self.readDirectory, "framework", "grid_standard_wrf_201608231600to201608240700.gag"),
-                            self._generated_file_path('run_201608231600to201608240700', extension="gag"))
+                            self._generated_file_path('run_201608231600to201608240700', extension="gag"),
+                            precision=5)
+
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_wrf_201608231600to201608240700.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
 
         # compare HMET files
         compare_directory = os.path.join(self.readDirectory,
@@ -367,17 +387,16 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
                                   raster=True)
 
     def test_wrf_to_gssha_read_hotstart(self):
-        '''
+        """
         Test WRF to GSSHA functionality read hotstart
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 lsm_folder=self.lsm_folder,
-                                 lsm_file_date_naming_convention=self.lsm_file_date_naming_convention,
-                                 read_hotstart=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               lsm_folder=self.lsm_folder,
+                               read_hotstart=True,
+                               )
 
         gr.run_forecast()
 
@@ -397,7 +416,12 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
         # grid_standard.gag
         self._compare_files(os.path.join(self.readDirectory, "framework", "grid_standard_wrf_201608231600to201608240700.gag"),
-                            self._generated_file_path('run_201608231600to201608240700', extension="gag"))
+                            self._generated_file_path('run_201608231600to201608240700', extension="gag"),
+                            precision=5)
+
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_wrf_201608231600to201608240700.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
 
         # compare HMET files
         compare_directory = os.path.join(self.readDirectory,
@@ -412,20 +436,19 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
                                   raster=True)
 
     def test_wrf_to_gssha_date_range(self):
-        '''
+        """
         Test WRF to GSSHA functionality with date filters
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 lsm_folder=self.lsm_folder,
-                                 lsm_file_date_naming_convention=self.lsm_file_date_naming_convention,
-                                 gssha_simulation_start=datetime(2016, 8, 23),
-                                 gssha_simulation_end=datetime(2002, 8, 24, 3, 59),
-                                 read_hotstart=True,
-                                 write_hotstart=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               lsm_folder=self.lsm_folder,
+                               gssha_simulation_start=datetime(2016, 8, 23),
+                               gssha_simulation_end=datetime(2002, 8, 24, 3, 59),
+                               read_hotstart=True,
+                               write_hotstart=True,
+                               )
 
         gr.run_forecast()
 
@@ -445,7 +468,12 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
         # grid_standard.gag
         self._compare_files(os.path.join(self.readDirectory, "framework", "grid_standard_wrf_201608230000to200208240359.gag"),
-                            self._generated_file_path('run_201608230000to200208240359', extension="gag"))
+                            self._generated_file_path('run_201608230000to200208240359', extension="gag"),
+                            precision=5)
+
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_wrf_201608230000to200208240359.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
 
         # compare HMET files
         compare_directory = os.path.join(self.readDirectory,
@@ -461,20 +489,19 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
 
     def test_wrf_to_gssha_min_hotstart(self):
-        '''
+        """
         Test WRF to GSSHA functionality with minmal mode hotstart generation
-        '''
+        """
         # INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable='',
-                                 gssha_directory=self.gssha_project_directory,
-                                 project_filename=self.gssha_project_file,
-                                 lsm_folder=self.lsm_folder,
-                                 lsm_file_date_naming_convention=self.lsm_file_date_naming_convention,
-                                 gssha_simulation_duration=timedelta(seconds=6*3600),
-                                 read_hotstart=True,
-                                 write_hotstart=True,
-                                 hotstart_minimal_mode=True,
-                                 )
+        gr = GSSHAWRFFramework(gssha_executable='',
+                               gssha_directory=self.gssha_project_directory,
+                               project_filename=self.gssha_project_file,
+                               lsm_folder=self.lsm_folder,
+                               gssha_simulation_duration=timedelta(seconds=6*3600),
+                               read_hotstart=True,
+                               write_hotstart=True,
+                               hotstart_minimal_mode=True,
+                               )
 
         gr.run_forecast()
 
@@ -494,7 +521,12 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
 
         # grid_standard.gag
         self._compare_files(os.path.join(self.readDirectory, "framework", "grid_standard_wrf_201608231600to201608232200.gag"),
-                            self._generated_file_path('minimal_hotstart_run_201608231600to201608232200', extension="gag"))
+                            self._generated_file_path('minimal_hotstart_run_201608231600to201608232200', extension="gag"),
+                            precision=5)
+
+        # compare yml files
+        self._compare_files(os.path.join(self.readDirectory, 'framework', 'gssha_event_wrf_minimal_hotstart_201608231600to201608232200.yml'),
+                            os.path.join(self.gssha_project_directory, 'gsshapy_event.yml'))
 
         # compare HMET files
         compare_directory = os.path.join(self.readDirectory,
@@ -509,13 +541,12 @@ class Test_GSSHA_WRF_Framework(TestGridTemplate):
                                   raster=True)
 
     def _generated_file_path(self, output_directory="", extension="prj"):
-        '''
+        """
         Returns path to generated file
-        '''
+        """
         return os.path.join(self.gssha_project_directory,
                             output_directory,
                             'grid_standard.{0}'.format(extension))
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -15,16 +15,18 @@ __all__ = ['MapTableFile',
            'MTContaminant',
            'MTSediment']
 
+import os
+import logging
+
 from future.utils import iteritems
 import numpy as np
 import pandas as pd
-import os
 from osgeo import gdalconst
+from gazar.grid import resample_grid
 from sqlalchemy import ForeignKey, Column
 from sqlalchemy.types import Integer, Float, String
 from sqlalchemy.orm import relationship
 
-from ..grid.grid_tools import resample_grid
 from . import DeclarativeBase
 from .lnd import LinkNodeDatasetFile
 from ..base.file_base import GsshaPyFileObjectBase
@@ -32,6 +34,8 @@ from .idx import IndexMap
 from ..lib import parsetools as pt
 from ..lib import cmt_chunk as mtc
 from ..lib.parsetools import valueReadPreprocessor as vrp, valueWritePreprocessor as vwp
+
+log = logging.getLogger(__name__)
 
 
 class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
@@ -62,7 +66,7 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
     fileExtension = Column(String, default='cmt')  #: STRING
 
     # Relationship Properties
-    indexMaps = relationship('IndexMap', back_populates='mapTableFile')  #: RELATIONSHIP
+    indexMaps = relationship('IndexMap', back_populates='mapTableFile', lazy='dynamic')  #: RELATIONSHIP
     mapTables = relationship('MapTable', back_populates='mapTableFile')  #: RELATIONSHIP
     projectFile = relationship('ProjectFile', uselist=False, back_populates='mapTableFile')  #: RELATIONSHIP
 
@@ -180,7 +184,7 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
                 # Initiate index map write
                 indexMap.write(directory, session=session)
 
-        for mapTable in self.mapTables:
+        for mapTable in self.getOrderedMapTables(session):
             if mapTable.name == 'SEDIMENTS':
                 self._writeSedimentTable(session=session,
                                          fileObject=openFile,
@@ -288,9 +292,9 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
                     self._createValueObjects(mt['valueList'], mt['varList'], mapTable, indexMap, None, replaceParamFile)
 
             except KeyError:
-                print(('INFO: Index Map "%s" for Mapping Table "%s" not found in list of index maps in the mapping '
-                       'table file. The Mapping Table was not read into the database.') % (
-                       mt['indexMapName'], mt['name']))
+                log.info(('Index Map "%s" for Mapping Table "%s" not found in list of index maps in the mapping '
+                          'table file. The Mapping Table was not read into the database.') % (
+                          mt['indexMapName'], mt['name']))
 
     def _createValueObjects(self, valueList, varList, mapTable, indexMap, contaminant, replaceParamFile):
         """
@@ -345,7 +349,7 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
                                          spatial=spatial,
                                          spatialReferenceID=spatialReferenceID)
             except:
-                print('WARNING: Attempted to read Contaminant Transport Output file {0}, but failed.'.format(chanFile))
+                log.warning('Attempted to read Contaminant Transport Output file {0}, but failed.'.format(chanFile))
 
     def _writeMapTable(self, session, fileObject, mapTable, replaceParamFile):
         """
@@ -648,7 +652,6 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
                                dtype={'id':'int', 'description':'str', 'roughness':'float'},
                                )
 
-
         # resample land use grid to gssha grid
         land_use_resampled = resample_grid(land_use_grid,
                                            self.projectFile.getGrid(),
@@ -658,11 +661,11 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
         unique_land_use_ids = np.unique(land_use_resampled.np_array())
 
         #only add ids in index map subset
-        df = df[df['id'].isin(unique_land_use_ids)]
+        df = df[df.id.isin(unique_land_use_ids)]
 
         # make sure all needed land use IDs exist
         for land_use_id in unique_land_use_ids:
-            if land_use_id not in df.index:
+            if land_use_id not in df.id.values:
                 raise IndexError("Land use ID {0} not found in table.".format(land_use_id))
 
         # delete duplicate/old tables with same name if they exist
@@ -684,7 +687,7 @@ class MapTableFile(DeclarativeBase, GsshaPyFileObjectBase):
         mapTable.mapTableFile = self
         # add values to table
         for row in df.itertuples():
-            idx = MTIndex(row.id, row.description, '')
+            idx = MTIndex(str(row.id), row.description, '')
             idx.indexMap = indexMap
             val = MTValue('ROUGH', row.roughness)
             val.index = idx

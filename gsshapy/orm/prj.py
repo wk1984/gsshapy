@@ -12,10 +12,19 @@ __all__ = ['ProjectFile',
            'ProjectCard']
 
 import json
-import re
-import shlex
-import numpy as np
+import logging
 import os
+import re
+import sys
+
+import numpy as np
+from osgeo import ogr, osr
+from pyproj import Proj, transform
+from pytz import timezone
+from shapely.wkb import loads as shapely_loads
+import shlex
+from gazar.grid import GDALGrid
+from timezonefinder import TimezoneFinder
 import xml.etree.ElementTree as ET
 
 from sqlalchemy import ForeignKey, Column
@@ -23,10 +32,11 @@ from sqlalchemy.types import Integer, String
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm.exc import NoResultFound, MultipleResultsFound
 
-from ..grid.grid_tools import GSSHAGrid
 from . import DeclarativeBase
 from ..base.file_base import GsshaPyFileObjectBase
 from .file_io import *
+
+log = logging.getLogger(__name__)
 
 
 class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
@@ -92,12 +102,12 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
     linkNodeDatasets = relationship('LinkNodeDatasetFile', back_populates='projectFile')  #: RELATIONSHIP
     genericFiles = relationship('GenericFile', back_populates='projectFile')  #: RELATIONSHIP
     wmsDatasets = relationship('WMSDatasetFile', back_populates='projectFile')  #: RELATIONSHIP
+    projectFileEventManager = relationship('ProjectFileEventManager', uselist=False)  #: RELATIONSHIP
 
     # File Properties
     MAP_TYPES_SUPPORTED = (1,)
     ALWAYS_READ_AND_WRITE_MAPS = ('ele', 'msk')
     OUTPUT_DIRECTORIES_SUPPORTED = ('REPLACE_FOLDER',)
-
 
     INPUT_FILES = {'#PROJECTION_FILE': ProjectionFile,  # WMS
                    '#CHANNEL_POINT_INPUT_WMS': GenericFile,
@@ -129,7 +139,9 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                    'OVERLAND_DEPTH_LOCATION': OutputLocationFile,  # Overland Flow (Other Output)
                    'OVERLAND_WSE_LOCATION': OutputLocationFile,
                    'OUT_WELL_LOCATION': OutputLocationFile,
-                   'SIMULATION_INPUT': GenericFile}
+                   'SIMULATION_INPUT': GenericFile,
+                   '#GSSHAPY_EVENT_YML': ProjectFileEventManager,
+                   }
 
     INPUT_MAPS = ('ELEVATION',  # Required Inputs
                   'WATERSHED_MASK',
@@ -220,7 +232,12 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
             self.mapType = map_type
             self.setCard(name='MAP_TYPE', value=str(map_type))
 
-    def _read(self, directory, filename, session, path, name, extension, spatial, spatialReferenceID, replaceParamFile):
+        # object Properties
+        self._tz = None # grid timezone
+
+    def _read(self, directory, filename, session, path, name, extension,
+              spatial, spatialReferenceID, replaceParamFile,
+              force_relative=True):
         """
         Project File Read from File Method
         """
@@ -228,7 +245,10 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
         HEADERS = ('GSSHAPROJECT',)
 
         # WMS Cards to include (don't discount as comments)
-        WMS_CARDS = ('#INDEXGRID_GUID', '#PROJECTION_FILE', '#LandSoil', '#CHANNEL_POINT_INPUT_WMS')
+        WMS_CARDS = ('#INDEXGRID_GUID', '#PROJECTION_FILE', '#LandSoil',
+                     '#CHANNEL_POINT_INPUT_WMS')
+
+        GSSHAPY_CARDS = ('#GSSHAPY_EVENT_YML', )
 
         with open(path, 'r') as f:
             for line in f:
@@ -236,15 +256,17 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                     # Skip empty lines
                     continue
 
-                elif '#' in line.split()[0] and line.split()[0] not in WMS_CARDS:
-                    # Skip comments designated by the hash symbol (with the exception of WMS_CARDS
+                elif '#' in line.split()[0] and line.split()[0] \
+                        not in WMS_CARDS + GSSHAPY_CARDS:
+                    # Skip comments designated by the hash symbol
+                    # (with the exception of WMS_CARDS and GSSHAPY_CARDS)
                     continue
 
                 try:
-                    card = self._extractCard(line)
+                    card = self._extractCard(line, force_relative)
 
                 except:
-                    card = self._extractDirectoryCard(line)
+                    card = self._extractDirectoryCard(line, force_relative)
 
                 # Now that the cardName and cardValue are separated
                 # load them into the gsshapy objects
@@ -270,7 +292,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
         Project File Write to File Method
         """
         # Enforce cards that must be written in certain order
-        PRIORITY_CARDS = ('WMS', 'MASK_WATERSHED', 'REPLACE_LINE', 'REPLACE_PARAMS', 'REPLACE_VALS', 'REPLACE_FOLDER')
+        PRIORITY_CARDS = ('WMS', 'MASK_WATERSHED', 'REPLACE_LINE',
+                          'REPLACE_PARAMS', 'REPLACE_VALS', 'REPLACE_FOLDER')
 
         filename = os.path.split(openFile.name)[1]
         name = filename.split('.')[0]
@@ -470,6 +493,78 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         # Commit to database
         self._commit(session, self.COMMIT_ERROR_MESSAGE)
+
+    def _readXputFile(self, file_cards, card_name, directory, session,
+                      spatial=False, spatialReferenceID=None,
+                      replaceParamFile=None, **kwargs):
+        """
+        Read specific IO file for a GSSHA project to the database.
+        """
+        # Automatically derive the spatial reference system, if possible
+        if spatialReferenceID is None:
+            spatialReferenceID = self._automaticallyDeriveSpatialReferenceId(directory)
+
+        card = self.getCard(card_name)
+        if card:
+            fileIO = file_cards[card.name]
+            filename = card.value.strip('"').strip("'")
+
+            # Invoke read method on each file
+            return self._invokeRead(fileIO=fileIO,
+                                    directory=directory,
+                                    filename=filename,
+                                    session=session,
+                                    spatial=spatial,
+                                    spatialReferenceID=spatialReferenceID,
+                                    replaceParamFile=replaceParamFile,
+                                    **kwargs)
+
+    def readInputFile(self, card_name, directory, session, spatial=False,
+                      spatialReferenceID=None, **kwargs):
+        """
+        Read specific input file for a GSSHA project to the database.
+
+        Args:
+            card_name(str): Name of GSSHA project card.
+            directory (str): Directory containing all GSSHA model files. This method assumes that all files are located
+                in the same directory.
+            session (:mod:`sqlalchemy.orm.session.Session`): SQLAlchemy session object bound to PostGIS enabled database
+            spatial (bool, optional): If True, spatially enabled objects will be read in as PostGIS spatial objects.
+                Defaults to False.
+            spatialReferenceID (int, optional): Integer id of spatial reference system for the model. If no id is
+                provided GsshaPy will attempt to automatically lookup the spatial reference ID. If this process fails,
+                default srid will be used (4326 for WGS 84).
+
+        Returns:
+            file object
+        """
+        # Read in replace param file
+        replaceParamFile = self._readReplacementFiles(directory, session, spatial, spatialReferenceID)
+        return self._readXputFile(self.INPUT_FILES, card_name, directory,
+                                  session, spatial, spatialReferenceID,
+                                  replaceParamFile, **kwargs)
+
+    def readOutputFile(self, card_name, directory, session, spatial=False,
+                      spatialReferenceID=None, **kwargs):
+        """
+        Read specific input file for a GSSHA project to the database.
+
+        Args:
+            card_name(str): Name of GSSHA project card.
+            directory (str): Directory containing all GSSHA model files. This method assumes that all files are located
+                in the same directory.
+            session (:mod:`sqlalchemy.orm.session.Session`): SQLAlchemy session object bound to PostGIS enabled database
+            spatial (bool, optional): If True, spatially enabled objects will be read in as PostGIS spatial objects.
+                Defaults to False.
+            spatialReferenceID (int, optional): Integer id of spatial reference system for the model. If no id is
+                provided GsshaPy will attempt to automatically lookup the spatial reference ID. If this process fails,
+                default srid will be used (4326 for WGS 84).
+
+        Returns:
+            file object
+        """
+        return self._readXputFile(self.OUTPUT_FILES, card_name, directory,
+                                  session, spatial, spatialReferenceID, **kwargs)
 
     def writeProject(self, session, directory, name):
         """
@@ -727,7 +822,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
         # Validate
         if 'streamLineColor' in styles:
             if len(styles['streamLineColor']) < 4:
-                print('WARNING: streamLineColor style must be a list or a tuple of four elements representing integer RGBA values.')
+                log.warn('streamLineColor style must be a list or a tuple of '
+                         'four elements representing integer RGBA values.')
             else:
                 userLineColor = styles['streamLineColor']
                 streamLineColorValue = (userLineColor[3], userLineColor[2], userLineColor[1], userLineColor[0])
@@ -738,7 +834,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                 streamLineWidthValue = styles['streamLineWidth']
 
             except ValueError:
-                print('WARNING: streamLineWidth must be a valid number representing the width of the line in pixels.')
+                log.warn('streamLineWidth must be a valid '
+                         'number representing the width of the line in pixels.')
 
         if 'nodeIconHref' in styles:
             nodeIconHrefValue = styles['nodeIconHref']
@@ -749,18 +846,21 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                 nodeIconScaleValue = styles['nodeIconScale']
 
             except ValueError:
-                print('WARNING: nodeIconScaleValue must be a valid number representing the width of the line in pixels.')
+                log.warn('nodeIconScaleValue must be a valid number representing'
+                         ' the width of the line in pixels.')
 
         if 'maskLineColor' in styles:
             if len(styles['maskLineColor']) < 4:
-                print('WARNING: maskLineColor style must be a list or a tuple of four elements representing integer RGBA values.')
+                log.warn('maskLineColor style must be a list or a tuple of four '
+                         'elements representing integer RGBA values.')
             else:
                 userLineColor = styles['maskLineColor']
                 maskLineColorValue = (userLineColor[3], userLineColor[2], userLineColor[1], userLineColor[0])
 
         if 'maskFillColor' in styles:
             if len(styles['maskFillColor']) < 4:
-                print('WARNING: maskFillColor style must be a list or a tuple of four elements representing integer RGBA values.')
+                log.warn('maskFillColor style must be a list or a tuple of four '
+                         'elements representing integer RGBA values.')
             else:
                 userLineColor = styles['maskFillColor']
                 maskFillColorValue = (userLineColor[3], userLineColor[2], userLineColor[1], userLineColor[0])
@@ -771,7 +871,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                 maskLineWidthValue = styles['maskLineWidth']
 
             except ValueError:
-                print('WARNING: maskLineWidth must be a valid number representing the width of the line in pixels.')
+                log.warn('maskLineWidth must be a valid number representing '
+                         'the width of the line in pixels.')
 
         if not documentName:
             documentName = self.name
@@ -837,7 +938,7 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                     lineString = ET.fromstring(linkKML)
                     placemark.append(lineString)
                 else:
-                    print("WARNING: No geometry found for link with id {0}".format(link.id))
+                    log.warning("No geometry found for link with id {0}".format(link.id))
 
                 if withNodes:
                     # Create the node styles
@@ -1008,24 +1109,68 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         return jsonString
 
-    def getGrid(self, use_mask=True):
+    def getGridByCard(self, gssha_card_name):
         """
-        Returns GSSHAGrid object of GSSHA model bounds
+        Returns GDALGrid object of GSSHA grid
+
+        Paramters:
+            gssha_card_name(str): Name of GSSHA project card for grid.
+
+        Returns:
+            GDALGrid
         """
-        grid_card_name = "WATERSHED_MASK"
-        if not use_mask:
-            grid_card_name = "ELEVATION"
-        gssha_grid_card = self.getCard(grid_card_name)
+        if gssha_card_name not in (self.INPUT_MAPS+self.WMS_DATASETS):
+            raise ValueError("Card {0} not found in valid grid cards ..."
+                             .format(gssha_card_name))
+
+        gssha_grid_card = self.getCard(gssha_card_name)
         if gssha_grid_card is None:
-            raise ValueError("{0} card not found ...".format(grid_card_name))
+            raise ValueError("{0} card not found ...".format(gssha_card_name))
 
         gssha_pro_card = self.getCard("#PROJECTION_FILE")
         if gssha_pro_card is None:
             raise ValueError("#PROJECTION_FILE card not found ...")
 
         # return gssha grid
-        return GSSHAGrid(gssha_grid_card.value.strip('"').strip("'"),
-                         gssha_pro_card.value.strip('"').strip("'"))
+        return GDALGrid(gssha_grid_card.value.strip('"').strip("'"),
+                        gssha_pro_card.value.strip('"').strip("'"))
+
+    def getGrid(self, use_mask=True):
+        """
+        Returns GDALGrid object of GSSHA model bounds
+
+        Paramters:
+            use_mask(bool): If True, uses watershed mask. Otherwise, it uses the elevaiton grid.
+
+        Returns:
+            GDALGrid
+
+        """
+        grid_card_name = "WATERSHED_MASK"
+        if not use_mask:
+            grid_card_name = "ELEVATION"
+
+        return self.getGridByCard(grid_card_name)
+
+    def getIndexGrid(self, name):
+        """
+        Returns GDALGrid object of index map
+
+        Paramters:
+            name(str): Name of index map in 'cmt' file.
+
+        Returns:
+            GDALGrid
+        """
+        index_map = self.mapTableFile.indexMaps.filter_by(name=name).one()
+
+        gssha_pro_card = self.getCard("#PROJECTION_FILE")
+        if gssha_pro_card is None:
+            raise ValueError("#PROJECTION_FILE card not found ...")
+
+        # return gssha grid
+        return GDALGrid(index_map.filename,
+                        gssha_pro_card.value.strip('"').strip("'"))
 
     def getWkt(self):
         '''
@@ -1040,44 +1185,124 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
             wkt_string = pro_file.read()
         return wkt_string
 
-    def setOutlet(self, latitude, longitude, outslope=None):
+    def getOutlet(self):
+        '''
+        Gets the outlet latitude and longitude.
+
+        Returns:
+            latitude(float): Latitude of grid cell center.
+            longitude(float): Longitude of grid cell center.
+        '''
+        # OUTROW, OUTCOL
+        outrow = int(self.getCard(name='OUTROW').value)-1
+        outcol = int(self.getCard(name='OUTCOL').value)-1
+        gssha_grid = self.getGrid()
+        return gssha_grid.pixel2lonlat(outcol, outrow)
+
+    def setOutlet(self, col, row, outslope=None):
         '''
         Sets the outlet grid cell information in the project file.
 
         Parameters:
-            latitude(float): Latitude of grid cell center.
-            longitude(float): Longitude of grid cell center.
+            col(float): 1-based column index.
+            row(float): 1-based row index.
             outslope(Optional[float]): River slope at outlet.
         '''
         #OUTROW, OUTCOL, OUTSLOPE
         gssha_grid = self.getGrid()
-        col, row = gssha_grid.lonlat2pixel(longitude, latitude)
+        # col, row = gssha_grid.lonlat2pixel(longitude, latitude)
         # add 1 to row & col becasue GSSHA is 1-based
-        self.setCard(name='OUTROW', value=str(row+1))
-        self.setCard(name='OUTCOL', value=str(col+1))
+        self.setCard(name='OUTROW', value=str(row))
+        self.setCard(name='OUTCOL', value=str(col))
         if outslope is None:
-            self.calculateOutletSlope(mask_grid=gssha_grid)
+            self.calculateOutletSlope()
         else:
             self.setCard(name='OUTSLOPE', value=str(outslope))
 
-    def calculateOutletSlope(self, elevation_grid=None, mask_grid=None):
+    def findOutlet(self, shapefile_path):
+        """
+        Calculate outlet location
+        """
+        # determine outlet from shapefile
+        # by getting outlet from first point in polygon
+        shapefile = ogr.Open(shapefile_path)
+        source_layer = shapefile.GetLayer(0)
+        source_lyr_proj = source_layer.GetSpatialRef()
+        osr_geographic_proj = osr.SpatialReference()
+        osr_geographic_proj.ImportFromEPSG(4326)
+        proj_transform = osr.CoordinateTransformation(source_lyr_proj,
+                                                      osr_geographic_proj)
+        boundary_feature = source_layer.GetFeature(0)
+        feat_geom = boundary_feature.GetGeometryRef()
+        feat_geom.Transform(proj_transform)
+        polygon = shapely_loads(feat_geom.ExportToWkb())
+
+        # make lowest point on boundary outlet
+        mask_grid = self.getGrid()
+        elevation_grid = self.getGrid(use_mask=False)
+        elevation_array = elevation_grid.np_array()
+        ma_elevation_array = np.ma.array(elevation_array,
+                                         mask=mask_grid.np_array()==0)
+        min_elevation = sys.maxsize
+        outlet_pt = None
+        for coord in list(polygon.exterior.coords):
+            try:
+                col, row = mask_grid.lonlat2pixel(*coord)
+            except IndexError:
+                # out of bounds
+                continue
+
+            elevation_value = ma_elevation_array[row, col]
+            if elevation_value is np.ma.masked:
+                # search for closest value in mask to this point
+                # elevation within 5 pixels in any direction
+                actual_value = elevation_array[row, col]
+                max_diff = sys.maxsize
+                nrow = None
+                ncol = None
+                nval = None
+                for row_ix in range(max(row-5, 0), min(row+5, mask_grid.y_size)):
+                    for col_ix in range(max(col-5, 0), min(col+5, mask_grid.x_size)):
+                        val = ma_elevation_array[row_ix, col_ix]
+                        if not val is np.ma.masked:
+                            val_diff = abs(val-actual_value)
+                            if val_diff < max_diff:
+                                max_diff = val_diff
+                                nval = val
+                                nrow = row_ix
+                                ncol = col_ix
+
+                if None not in (nrow, ncol, nval):
+                    row = nrow
+                    col = ncol
+                    elevation_value = nval
+
+            if elevation_value < min_elevation:
+                min_elevation = elevation_value
+                outlet_pt = (col, row)
+
+        if outlet_pt is None:
+            raise IndexError('No valid outlet points found on boundary ...')
+
+        outcol, outrow = outlet_pt
+        self.setOutlet(col=outcol+1, row=outrow+1)
+
+    def calculateOutletSlope(self):
         '''
         Attempt to determine the slope at the OUTLET
         '''
         try:
-            if mask_grid is None:
-                mask_grid = self.getGrid()
-            if elevation_grid is None:
-                elevation_grid = self.getGrid(use_mask=False)
+            mask_grid = self.getGrid()
+            elevation_grid = self.getGrid(use_mask=False)
 
             outrow = int(self.getCard("OUTROW").value)-1
             outcol = int(self.getCard("OUTCOL").value)-1
             cell_size = float(self.getCard("GRIDSIZE").value)
 
             min_row = max(0, outrow-1)
-            max_row = min(mask_grid.x_size(), outrow+2)
+            max_row = min(mask_grid.x_size, outrow+2)
             min_col = max(0, outcol-1)
-            max_col = min(mask_grid.y_size(), outcol+2)
+            max_col = min(mask_grid.y_size, outcol+2)
 
             mask_array = mask_grid.np_array()
             mask_array[outrow, outcol] = 0
@@ -1102,6 +1327,36 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         self.setCard("OUTSLOPE", str(outslope))
 
+    @property
+    def timezone(self):
+        """
+        timezone of GSSHA model
+        """
+        if self._tz is None:
+            # GET CENTROID FROM GSSHA GRID
+            cen_lat, cen_lon = self.centerLatLon()
+            # update time zone
+            tf = TimezoneFinder()
+            tz_name = tf.timezone_at(lng=cen_lon, lat=cen_lat)
+
+            self._tz = timezone(tz_name)
+        return self._tz
+
+    def centerLatLon(self):
+        """
+        Get the center lat/lon of model
+        """
+        # GET CENTROID FROM GSSHA GRID
+        gssha_grid = self.getGrid()
+
+        min_x, max_x, min_y, max_y = gssha_grid.bounds()
+        x_ext, y_ext = transform(gssha_grid.proj,
+                                 Proj(init='epsg:4326'),
+                                 [min_x, max_x, min_x, max_x],
+                                 [min_y, max_y, max_y, min_y],
+                                 )
+        return (np.mean(y_ext), np.mean(x_ext))
+
     def _automaticallyDeriveSpatialReferenceId(self, directory):
         """
         This method is used to automatically lookup the spatial reference ID of the GSSHA project. This method is a
@@ -1125,15 +1380,15 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                 int(srid)
                 self.srid = srid
                 spatialReferenceID = srid
-                print("INFO: Automatic spatial reference ID lookup succeded. Using id: {0}".format(spatialReferenceID))
+                log.info("Automatic spatial reference ID lookup succeded. Using id: {0}".format(spatialReferenceID))
             except:
                 # Otherwise, use the default id
                 spatialReferenceID = DEFAULT_SPATIAL_REFERENCE_ID
-                print("WARNING: Automatic spatial reference ID lookup failed. Using default id: {0}".format(DEFAULT_SPATIAL_REFERENCE_ID))
+                log.warn("Automatic spatial reference ID lookup failed. Using default id: {0}".format(DEFAULT_SPATIAL_REFERENCE_ID))
         else:
             # If there is no projection card in the project file, use default
             spatialReferenceID = DEFAULT_SPATIAL_REFERENCE_ID
-            print("WARNING: Automatic spatial reference ID lookup failed. Using default id: {0}".format(DEFAULT_SPATIAL_REFERENCE_ID))
+            log.warn("Automatic spatial reference ID lookup failed. Using default id: {0}".format(DEFAULT_SPATIAL_REFERENCE_ID))
 
         return spatialReferenceID
 
@@ -1155,7 +1410,7 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
         # Create directory if it doesn't exist
         if not os.path.isdir(batchDirectory):
             os.mkdir(batchDirectory)
-            print('INFO: Creating directory for batch output: {0}'.format(batchDirectory))
+            log.info('Creating directory for batch output: {0}'.format(batchDirectory))
 
         return batchDirectory
 
@@ -1211,7 +1466,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                                          spatialReferenceID=spatialReferenceID,
                                          replaceParamFile=replaceParamFile)
 
-            print('WARNING: Could not read map files. MAP_TYPE {0} not supported.'.format(self.mapType))
+            log.warn('Could not read map files. '
+                     'MAP_TYPE {0} not supported.'.format(self.mapType))
 
     def _readWMSDatasets(self, datasetCards, directory, session, spatial=False, spatialReferenceID=4236):
         """
@@ -1307,7 +1563,6 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
         numFilesRead = 0
 
         for batchFile in batchFiles:
-            print(batchFile)
             instance = fileIO()
             instance.projectFile = self
 
@@ -1322,20 +1577,20 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         # Issue warnings
         if '[' in filename or ']' in filename:
-            print('INFO: A file cannot be read, because the path to the '
-                  'file in the project file has been replaced with '
-                  'replacement variable {0}.'.format(filename))
+            log.info('A file cannot be read, because the path to the '
+                     'file in the project file has been replaced with '
+                     'replacement variable {0}.'.format(filename))
 
         elif numFilesRead == 0:
-            print('WARNING: {0} listed in project file, but no such '
-                  'file exists.'.format(filename))
+            log.warn('{0} listed in project file, but no such '
+                     'file exists.'.format(filename))
 
         else:
-            print('INFO: Batch mode output detected. {0} files read '
-                  'for file {1}'.format(numFilesRead, filename))
+            log.info('Batch mode output detected. {0} files read '
+                     'for file {1}'.format(numFilesRead, filename))
 
     def _invokeRead(self, fileIO, directory, filename, session, spatial=False,
-                    spatialReferenceID=4236, replaceParamFile=None):
+                    spatialReferenceID=4236, replaceParamFile=None, **kwargs):
         """
         Invoke File Read Method on Other Files
         """
@@ -1346,7 +1601,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
             instance.projectFile = self
             instance.read(directory, filename, session, spatial=spatial,
                           spatialReferenceID=spatialReferenceID,
-                          replaceParamFile=replaceParamFile)
+                          replaceParamFile=replaceParamFile, **kwargs)
+            return instance
         else:
             self._readBatchOutputForFile(directory, fileIO, filename, session,
                                          spatial, spatialReferenceID, replaceParamFile)
@@ -1365,9 +1621,9 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
                 # Check for replacement variables
                 if '[' in filename or ']' in filename:
-                    print('INFO: The file for project card {0} cannot be '
-                          'written, because the path has been replaced '
-                          'with replacement variable {1}.'.format(card.name, filename))
+                    log.info('The file for project card {0} cannot be '
+                             'written, because the path has been replaced '
+                             'with replacement variable {1}.'.format(card.name, filename))
                     return
 
                 # Determine new filename
@@ -1418,8 +1674,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                                           filename=filename,
                                           replaceParamFile=replaceParamFile)
 
-            print('Error: Could not write map files. MAP_TYPE {0} '
-                  'not supported.'.format(self.mapType))
+            log.error('Could not write map files. MAP_TYPE {0} '
+                      'not supported.'.format(self.mapType))
 
     def _writeWMSDatasets(self, session, directory, wmsDatasetCards, name=None):
         """
@@ -1455,8 +1711,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                     except NoResultFound:
                         # Handle case when there is no file in database but
                         # the card is listed in the project file
-                        print('WARNING: {0} listed as card in project file, '
-                              'but the file is not found in the database.'.format(filename))
+                        log.warn('{0} listed as card in project file, '
+                                 'but the file is not found in the database.'.format(filename))
 
                     except MultipleResultsFound:
                         # Write all instances
@@ -1470,8 +1726,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                         wmsDataset.write(session=session, directory=directory,
                                          name=filename, maskMap=maskMap)
         else:
-            print('Error: Could not write WMS Dataset files. '
-                  'MAP_TYPE {0} not supported.'.format(self.mapType))
+            log.error('Could not write WMS Dataset files. '
+                      'MAP_TYPE {0} not supported.'.format(self.mapType))
 
     def _writeReplacementFiles(self, session, directory, name):
         """
@@ -1509,8 +1765,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                                    name=prefixFilename,
                                    replaceParamFile=replaceParamFile)
 
-        print('INFO: Batch mode output detected. {1} files written '
-              'having extension {0}.'.format(extension, index + 1))
+        log.info('Batch mode output detected. {1} files written '
+                 'having extension {0}.'.format(extension, index + 1))
 
     def _invokeWrite(self, fileIO, session, directory, filename, replaceParamFile):
         """
@@ -1541,8 +1797,8 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
             except NoResultFound:
                 # Handle case when there is no file in database but the
                 # card is listed in the project file
-                print('WARNING: {0} listed as card in project file, but '
-                      'the file is not found in the database.'.format(filename))
+                log.warn('{0} listed as card in project file, but '
+                         'the file is not found in the database.'.format(filename))
             except MultipleResultsFound:
                 self._invokeWriteForMultipleOfType(directory, extension, fileIO,
                                                    filename, session,
@@ -1609,7 +1865,7 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
         # If the value is a None type, then return false
         return False
 
-    def _extractCard(self, projectLine):
+    def _extractCard(self, projectLine, force_relative=True):
         DIRECTORY_PATHS = ('REPLACE_FOLDER',)
 
         splitLine = shlex.split(projectLine)
@@ -1632,7 +1888,7 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
                 # A string will throw an exception with an attempt to
                 # convert to float. In this case wrap the string
                 # in double quotes.
-                if cardName == 'WMS':
+                if cardName == 'WMS' or not force_relative:
                     cardValue = ' '.join(splitLine[1:])
                 elif '.' in pathSplit[-1]:
                     if cardName == '#INDEXGRID_GUID':
@@ -1663,7 +1919,7 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         return {'name': cardName, 'value': cardValue}
 
-    def _extractDirectoryCard(self, projectLine):
+    def _extractDirectoryCard(self, projectLine, force_relative=True):
         PROJECT_PATH = ('PROJECT_PATH')
 
         # Handle special case with directory cards in windows.
@@ -1673,31 +1929,34 @@ class ProjectFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         # Extract Card Name from the first item in the list
         cardName = currLine[0]
-        preValue = currLine[1].strip('"')
+        preValue = currLine[1].strip('"').strip("'")
 
-        if cardName in PROJECT_PATH:
-            # Project as relative is the current directory (empty string)
-            cardValue = '""'
+        if not force_relative:
+            cardValue = preValue
         else:
-            # Pull only the last directory to make it relative
-            if preValue.endswith('/'):
-                splath = preValue.split('/')
-                dirname = splath[-2]
-
-            elif preValue.endswith('\\\\'):
-                splath = preValue.split('\\\\')
-                dirname = splath[-2]
-
-            elif preValue.endswith('\\'):
-                splath = preValue.split('\\')
-                dirname = splath[-2]
-
+            if cardName in PROJECT_PATH:
+                # Project as relative is the current directory (empty string)
+                cardValue = '""'
             else:
-                dirname = os.path.basename(preValue)
+                # Pull only the last directory to make it relative
+                if preValue.endswith('/'):
+                    splath = preValue.split('/')
+                    dirname = splath[-2]
 
-            # Eliminate slashes to make it OS agnostic
-            basename = dirname.replace('\\', '')
-            cardValue = '"%s"' % basename.replace('/', '')
+                elif preValue.endswith('\\\\'):
+                    splath = preValue.split('\\\\')
+                    dirname = splath[-2]
+
+                elif preValue.endswith('\\'):
+                    splath = preValue.split('\\')
+                    dirname = splath[-2]
+
+                else:
+                    dirname = os.path.basename(preValue)
+
+                # Eliminate slashes to make it OS agnostic
+                basename = dirname.replace('\\', '')
+                cardValue = '"%s"' % basename.replace('/', '')
 
         return {'name': cardName, 'value': cardValue}
 

@@ -1,11 +1,11 @@
-'''
+"""
 ********************************************************************************
 * Name: Elevation Tests
 * Author: Alan D. Snow
 * Created On: February 10, 2016
 * License: BSD 3-Clause
 ********************************************************************************
-'''
+"""
 from glob import glob
 from os import path, chdir
 import unittest
@@ -16,6 +16,7 @@ from .template import TestGridTemplate
 from gsshapy.orm import ProjectFile, ElevationGridFile
 from gsshapy.lib import db_tools as dbt
 
+
 class TestElevation(TestGridTemplate):
     def setUp(self):
         self.gssha_project_directory = path.join(self.writeDirectory,
@@ -25,11 +26,14 @@ class TestElevation(TestGridTemplate):
         self.elevation_path = path.join(self.writeDirectory,
                                         'gmted_elevation.tif')
 
+        self.shapefile_path = path.join(self.writeDirectory,
+                                        'phillipines_5070115700.shp')
+
         self.compare_path = path.join(self.readDirectory,
                                       'phillipines',
                                       'compare_data')
 
-        # copy gssh project
+        # copy gssha project
         try:
             copytree(path.join(self.readDirectory, 'phillipines', 'gssha_project'),
                      self.gssha_project_directory)
@@ -43,6 +47,18 @@ class TestElevation(TestGridTemplate):
                  self.elevation_path)
         except OSError:
             pass
+
+        # copy shapefile
+        shapefile_basename = path.join(self.readDirectory,
+                                       'phillipines',
+                                       'phillipines_5070115700.*')
+
+        for shapefile_part in glob(shapefile_basename):
+            try:
+                copy(shapefile_part,
+                     path.join(self.writeDirectory, path.basename(shapefile_part)))
+            except OSError:
+                pass
 
         # Create Test DB
         sqlalchemy_url, sql_engine = dbt.init_sqlite_memory()
@@ -62,10 +78,11 @@ class TestElevation(TestGridTemplate):
         chdir(self.gssha_project_directory)
 
     def test_generate_elevation_grid(self):
-        '''
+        """
         Tests generating an elevation grid from raster
-        '''
-        self.ele_file.generateFromRaster(self.elevation_path)
+        """
+        self.ele_file.generateFromRaster(self.elevation_path,
+                                         self.shapefile_path)
 
         # WRITE OUT UPDATED GSSHA PROJECT FILE
         self.project_manager.writeInput(session=self.db_session,

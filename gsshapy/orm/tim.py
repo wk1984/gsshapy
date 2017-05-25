@@ -12,6 +12,8 @@ __all__ = ['TimeSeriesFile',
            'TimeSeries',
            'TimeSeriesValue']
 
+import logging
+import pandas as pd
 from sqlalchemy import ForeignKey, Column
 from sqlalchemy.types import Integer, Float, String
 from sqlalchemy.orm import relationship
@@ -19,6 +21,8 @@ from sqlalchemy.orm import relationship
 from . import DeclarativeBase
 from ..base.file_base import GsshaPyFileObjectBase
 from ..lib.pivot import pivot
+
+log = logging.getLogger(__name__)
 
 
 class TimeSeriesFile(DeclarativeBase, GsshaPyFileObjectBase):
@@ -52,7 +56,7 @@ class TimeSeriesFile(DeclarativeBase, GsshaPyFileObjectBase):
         """
         GsshaPyFileObjectBase.__init__(self)
 
-    def _read(self, directory, filename, session, path, name, extension, spatial, spatialReferenceID, replaceParamFile):
+    def _read(self, directory, filename, session, path, name, extension, spatial=None, spatialReferenceID=None, replaceParamFile=None):
         """
         Generic Time Series Read from File Method
         """
@@ -76,7 +80,6 @@ class TimeSeriesFile(DeclarativeBase, GsshaPyFileObjectBase):
 
         self._createTimeSeriesObjects(timeSeries, filename)
 
-
     def _write(self, session, openFile, replaceParamFile):
         """
         Generic Time Series Write to File Method
@@ -98,7 +101,7 @@ class TimeSeriesFile(DeclarativeBase, GsshaPyFileObjectBase):
                            'value': value.value}
                 valList.append(valDict)
 
-        # Use pivot function (from lib) to pivot the values into 
+        # Use pivot function (from lib) to pivot the values into
         # a format that is easy to write.
         result = pivot(valList, ('time',), ('tsNum',), 'value')
 
@@ -115,6 +118,20 @@ class TimeSeriesFile(DeclarativeBase, GsshaPyFileObjectBase):
                     val)
 
             openFile.write('   %.8f%s\n' % (line['time'], valString))
+
+    def as_dataframe(self):
+        """
+        Return time series as pandas dataframe
+        """
+        time_series = {}
+        for ts_index, ts in enumerate(self.timeSeries):
+            index = []
+            data = []
+            for value in ts.values:
+                index.append(value.simTime)
+                data.append(value.value)
+            time_series[ts_index] = pd.Series(data, index=index)
+        return pd.DataFrame(time_series)
 
     def _createTimeSeriesObjects(self, timeSeries, filename):
         """
@@ -140,8 +157,8 @@ class TimeSeriesFile(DeclarativeBase, GsshaPyFileObjectBase):
                     # Associate with appropriate TimeSeries object via the index
                     tsVal.timeSeries = series[index]
         except IndexError:
-            print(('WARNING: %s was opened, but the contents of the file were empty.'
-                   'This file will not be read into the database.') % filename)
+            log.warn(('%s was opened, but the contents of the file were empty.'
+                     'This file will not be read into the database.') % filename)
         except:
             raise
 

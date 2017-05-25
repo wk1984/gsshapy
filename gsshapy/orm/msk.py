@@ -10,10 +10,8 @@
 __all__ = ['WatershedMaskFile']
 
 import os
-from osgeo import ogr, osr
-from shapely.wkb import loads as shapely_loads
 
-from ..grid.grid_tools import rasterize_shapefile
+from gazar.shape import rasterize_shapefile
 
 from .map import RasterMapFile
 from .pro import ProjectionFile
@@ -124,33 +122,17 @@ class WatershedMaskFile(RasterMapFile):
 
         # update project file cards
         self.projectFile.setCard('WATERSHED_MASK', out_raster_path, add_quotes=True)
-        self.projectFile.setCard('GRIDSIZE', str((gr.geotransform()[1] - gr.geotransform()[-1])/2.0))
-        self.projectFile.setCard('ROWS', str(gr.y_size()))
-        self.projectFile.setCard('COLS', str(gr.x_size()))
+        self.projectFile.setCard('GRIDSIZE', str((gr.geotransform[1] - gr.geotransform[-1])/2.0))
+        self.projectFile.setCard('ROWS', str(gr.y_size))
+        self.projectFile.setCard('COLS', str(gr.x_size))
 
         # write projection file if does not exist
         if wkt_projection is None:
             proj_file = ProjectionFile()
-            proj_file.projection = gr.wkt()
+            proj_file.projection = gr.wkt
             proj_file.projectFile = self.projectFile
             proj_path = "{0}_prj.pro".format(os.path.splitext(out_raster_path)[0])
             gr.write_prj(proj_path)
             self.projectFile.setCard('#PROJECTION_FILE', proj_path, add_quotes=True)
         # read raster into object
         self._load_raster_text(out_raster_path)
-
-        # determine outlet from shapefile
-        # by getting outlet from first point in polygon
-        shapefile = ogr.Open(shapefile_path)
-        source_layer = shapefile.GetLayer(0)
-        source_lyr_proj = source_layer.GetSpatialRef()
-        osr_geographic_proj = osr.SpatialReference()
-        osr_geographic_proj.ImportFromEPSG(4326)
-        proj_transform = osr.CoordinateTransformation(source_lyr_proj, osr_geographic_proj)
-        boundary_feature = source_layer.GetFeature(0)
-        feat_geom = boundary_feature.GetGeometryRef()
-        feat_geom.Transform(proj_transform)
-        polygon = shapely_loads(feat_geom.ExportToWkb())
-        coordinates = list(polygon.exterior.coords)
-        outlet_pt = coordinates[0]
-        self.projectFile.setOutlet(latitude=outlet_pt[1], longitude=outlet_pt[0])

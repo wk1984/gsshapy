@@ -1,11 +1,11 @@
-'''
+"""
 ********************************************************************************
 * Name: Test Grid Template
 * Author: Alan D. Snow
 * Created On: September 16, 2016
 * License: BSD 3-Clause
 ********************************************************************************
-'''
+"""
 import itertools
 from netCDF4 import Dataset
 from numpy import array
@@ -24,9 +24,9 @@ class TestGridTemplate(unittest.TestCase):
     writeDirectory = os.path.join(SCRIPT_DIR, 'out')
 
     def _compare_netcdf_files(self, original, new, ext="nc"):
-        '''
+        """
         Compare the contents of two netcdf files
-        '''
+        """
         filenameO = '%s.%s' % (original, ext)
         filePathO = os.path.join(self.readDirectory, filenameO)
         filenameN = '%s.%s' % (new, ext)
@@ -47,19 +47,15 @@ class TestGridTemplate(unittest.TestCase):
         assert_almost_equal(dO.variables['temperature'][:], dN.variables['temperature'][:], decimal=5)
         assert_almost_equal(dO.variables['cloud_cover'][:], dN.variables['cloud_cover'][:], decimal=5)
 
-        self.assertEqual(dO.getncattr("north"),dN.getncattr("north"))
-        self.assertEqual(dO.getncattr("south"),dN.getncattr("south"))
-        self.assertEqual(dO.getncattr("east"),dN.getncattr("east"))
-        self.assertEqual(dO.getncattr("west"),dN.getncattr("west"))
-        assert_almost_equal(dO.getncattr("cell_size"), dN.getncattr("cell_size"), decimal=9)
-
+        self.assertEqual(dO.getncattr("proj4"),dN.getncattr("proj4"))
+        assert_almost_equal(dO.getncattr("geotransform"),dN.getncattr("geotransform"))
         dO.close()
         dN.close()
 
-    def _compare_files(self, original, new, raster=False):
-        '''
+    def _compare_files(self, original, new, raster=False, precision=7):
+        """
         Compare the contents of two files
-        '''
+        """
         if raster:
             dsO = gdal.Open(original)
             dsN = gdal.Open(new)
@@ -67,12 +63,19 @@ class TestGridTemplate(unittest.TestCase):
             # compare data
             rO = array(dsO.ReadAsArray())
             rN = array(dsN.ReadAsArray())
-            assert_almost_equal(rO, rN)
+            assert_almost_equal(rO, rN, decimal=precision)
 
             # compare geotransform
-            assert_almost_equal(dsO.GetGeoTransform(), dsN.GetGeoTransform(), 
-                                decimal=10)
-            
+            assert_almost_equal(dsO.GetGeoTransform(), dsN.GetGeoTransform(),
+                                decimal=5)
+
+            # compare band counts
+            assert dsO.RasterCount == dsN.RasterCount
+            # compare nodata
+            for band_id in range(1, dsO.RasterCount+1):
+                assert (dsO.GetRasterBand(band_id).GetNoDataValue()
+                        == dsN.GetRasterBand(band_id).GetNoDataValue())
+
         else:
             with open(original) as fileO:
                 contentsO = fileO.read()
@@ -81,19 +84,21 @@ class TestGridTemplate(unittest.TestCase):
             with open(new) as fileN:
                 contentsN = fileN.read()
                 linesN = contentsN.strip().split()
-                
-            for lineO, lineN in zip(linesO, linesN):
-                try:
-                    valO = float(lineO)
-                    valN = float(lineN)
-                    assert_almost_equal(valO, valN) 
-                except ValueError:
-                    self.assertEqual(linesO, linesN)
 
-    def _compare_directories(self, dir1, dir2, ignore_file=None, raster=False):
-        '''
+            for lineO, lineN in zip(linesO, linesN):
+                for valO, valN in zip(lineO.split(), lineN.split()):
+                    try:
+                        valO = float(valO)
+                        valN = float(valN)
+                        assert_almost_equal(valO, valN, precision)
+                    except ValueError:
+                        self.assertEqual(valO, valN)
+                        pass
+
+    def _compare_directories(self, dir1, dir2, ignore_file=None, raster=False, precision=7):
+        """
         Compare the contents of the files of two directories
-        '''
+        """
 
         for afile in os.listdir(dir2):
             if not os.path.basename(afile).startswith(".")\
@@ -103,7 +108,8 @@ class TestGridTemplate(unittest.TestCase):
                 try:
                     self._compare_files(os.path.join(dir1, afile),
                                         os.path.join(dir2, afile),
-                                        raster=raster)
+                                        raster=raster,
+                                        precision=precision)
                 except AssertionError:
                     print(os.path.join(dir1, afile))
                     print(os.path.join(dir2, afile))
@@ -114,15 +120,15 @@ class TestGridTemplate(unittest.TestCase):
             self.assertEqual(one, two)
 
     def _before_teardown(self):
-        '''
+        """
         Method to execute at beginning of tearDown
-        '''
+        """
         return
 
     def tearDown(self):
-        '''
+        """
         Method to cleanup after tests
-        '''
+        """
         self._before_teardown()
 
         os.chdir(SCRIPT_DIR)

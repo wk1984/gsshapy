@@ -10,8 +10,11 @@
 __all__ = ['ElevationGridFile']
 
 import os
+import sys
+
 from osgeo import gdalconst
-from ..grid.grid_tools import resample_grid
+from gazar.grid import resample_grid
+
 from .map import RasterMapFile
 
 
@@ -36,10 +39,11 @@ class ElevationGridFile(RasterMapFile):
         # add to project_file
         self.projectFile = project_file
 
-    def generateFromRaster(self, elevation_raster,
+    def generateFromRaster(self,
+                           elevation_raster,
+                           shapefile_path=None,
                            out_elevation_grid=None,
-                           resample_method=gdalconst.GRA_Average,
-                           calculate_outlet_slope=True):
+                           resample_method=gdalconst.GRA_Average):
         '''
         Generates an elevation grid for the GSSHA simulation
         from an elevation raster
@@ -103,6 +107,5 @@ class ElevationGridFile(RasterMapFile):
         self.projectFile.setCard("ELEVATION", out_elevation_grid, add_quotes=True)
         # read raster into object
         self._load_raster_text(out_elevation_grid)
-        if calculate_outlet_slope:
-            self.projectFile.calculateOutletSlope(elevation_grid=elevation_grid,
-                                                  mask_grid=mask_grid)
+        # find outlet and add slope
+        self.projectFile.findOutlet(shapefile_path)

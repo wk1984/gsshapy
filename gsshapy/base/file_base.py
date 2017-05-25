@@ -7,13 +7,14 @@
 * License: BSD 2-Clause
 ********************************************************************************
 """
-
+import logging
 import os
 
 from sqlalchemy.exc import IntegrityError
 
 __all__ = ['GsshaPyFileObjectBase']
 
+log = logging.getLogger(__name__)
 
 class GsshaPyFileObjectBase:
     """
@@ -31,7 +32,8 @@ class GsshaPyFileObjectBase:
         """
         self.fileExtension = ''
 
-    def read(self, directory, filename, session, spatial=False, spatialReferenceID=4236, replaceParamFile=None):
+    def read(self, directory, filename, session, spatial=False,
+             spatialReferenceID=4236, replaceParamFile=None, **kwargs):
         """
         Generic read file into database method.
 
@@ -63,7 +65,8 @@ class GsshaPyFileObjectBase:
             session.add(self)
 
             # Read
-            self._read(directory, filename, session, path, name, extension, spatial, spatialReferenceID, replaceParamFile)
+            self._read(directory, filename, session, path, name, extension,
+                       spatial, spatialReferenceID, replaceParamFile, **kwargs)
 
             # Commit to database
             self._commit(session, self.COMMIT_ERROR_MESSAGE)
@@ -72,9 +75,9 @@ class GsshaPyFileObjectBase:
             session.rollback()
 
             # Print warning
-            print('WARNING: Could not find file named {0}. File not read.'.format(filename))
+            log.warn('Could not find file named {0}. File not read.'.format(filename))
 
-    def write(self, session, directory, name, replaceParamFile=None):
+    def write(self, session, directory, name, replaceParamFile=None, **kwargs):
         """
         Write from database back to file.
 
@@ -113,7 +116,8 @@ class GsshaPyFileObjectBase:
             # Write Lines
             self._write(session=session,
                         openFile=openFile,
-                        replaceParamFile=replaceParamFile)
+                        replaceParamFile=replaceParamFile,
+                        **kwargs)
 
     def _commit(self, session, errorMessage):
         """
@@ -123,7 +127,7 @@ class GsshaPyFileObjectBase:
             session.commit()
         except IntegrityError:
             # Raise special error if the commit fails due to empty files
-            print('ERROR: Commit to database failed. %s' % errorMessage)
+            log.error('Commit to database failed. %s' % errorMessage)
         except:
             # Raise other errors as normal
             raise

@@ -1,11 +1,11 @@
-'''
+"""
 ********************************************************************************
 * Name: Project Generation Tests
 * Author: Alan D. Snow
 * Created On: February 28, 2017
 * License: BSD 3-Clause
 ********************************************************************************
-'''
+"""
 from datetime import datetime, timedelta
 from glob import glob
 from os import path, chdir
@@ -70,9 +70,9 @@ class TestProjectGenerate(TestGridTemplate):
         self.db_session = dbt.create_session(sqlalchemy_url, sql_engine)
 
     def _compare_basic_model(self, project_name):
-        '''
+        """
         Compare output from basic GSSHA model
-        '''
+        """
         # compare msk
         mask_name = '{0}.msk'.format(project_name)
         new_mask_grid = path.join(self.gssha_project_directory, mask_name)
@@ -95,9 +95,9 @@ class TestProjectGenerate(TestGridTemplate):
         self._compare_files(generated_proj_file, compare_proj_file)
 
     def _compare_basic_model_idx_maps(self, project_name):
-        '''
+        """
         Compare output from basic GSSHA model with index maps
-        '''
+        """
         # compare main project files
         self._compare_basic_model(project_name)
         # compare cmt
@@ -111,15 +111,15 @@ class TestProjectGenerate(TestGridTemplate):
         self._compare_files(original_idx_file, new_idx_file, raster=True)
 
     def _before_teardown(self):
-        '''
+        """
         Method to execute at beginning of tearDown
-        '''
+        """
         self.db_session.close()
 
     def test_generate_basic_project(self):
-        '''
+        """
         Tests generating a basic GSSHA project
-        '''
+        """
 
         chdir(self.gssha_project_directory)
         project_name = "grid_standard_basic"
@@ -141,13 +141,11 @@ class TestProjectGenerate(TestGridTemplate):
         # ADD ELEVATION FILE
         ele_file = ElevationGridFile(project_file=project_manager,
                                      session=self.db_session)
-        ele_file.generateFromRaster(self.elevation_path)
+        ele_file.generateFromRaster(self.elevation_path,
+                                    self.shapefile_path)
 
         # ADD OUTLET POINT
-        grid = project_manager.getGrid()
-        lon, lat = grid.pixel2lonlat(0,6)
-
-        project_manager.setOutlet(latitude=lat, longitude=lon,
+        project_manager.setOutlet(col=0, row=6,
                                   outslope=0.002)
 
         # ADD ADDITIONAL REQUIRED FILES
@@ -175,9 +173,9 @@ class TestProjectGenerate(TestGridTemplate):
         self._compare_basic_model(project_name)
 
     def test_generate_basic_project_land_cover(self):
-        '''
+        """
         Tests generating a basic GSSHA project with land cover
-        '''
+        """
 
         chdir(self.gssha_project_directory)
         project_name = "grid_standard_basic_land_cover"
@@ -199,7 +197,8 @@ class TestProjectGenerate(TestGridTemplate):
         # ADD ELEVATION FILE
         ele_file = ElevationGridFile(project_file=project_manager,
                                      session=self.db_session)
-        ele_file.generateFromRaster(self.elevation_path)
+        ele_file.generateFromRaster(self.elevation_path,
+                                    self.shapefile_path)
 
         # ADD ROUGHNESS FROM LAND COVER
         # see http://www.gsshawiki.com/Project_File:Overland_Flow_%E2%80%93_Required
@@ -233,9 +232,9 @@ class TestProjectGenerate(TestGridTemplate):
         self._compare_basic_model_idx_maps(project_name)
 
     def test_generate_basic_project_manager(self):
-        '''
+        """
         Tests generating a basic GSSHA project with GSSHAModel
-        '''
+        """
 
         project_name = "grid_standard_basic_model"
 
@@ -258,10 +257,10 @@ class TestProjectGenerate(TestGridTemplate):
         self._compare_basic_model(project_name)
 
     def test_generate_basic_project_manager(self):
-        '''
+        """
         Tests generating a basic GSSHA project with GSSHAModel self-calulating
         grid cell size from elevation grid
-        '''
+        """
 
         project_name = "grid_standard_basic_model_auto"
 
@@ -283,9 +282,9 @@ class TestProjectGenerate(TestGridTemplate):
         self._compare_basic_model(project_name)
 
     def test_generate_basic_rough_project_manager(self):
-        '''
+        """
         Tests generating a basic GSSHA project with GSSHAModel with roughness
-        '''
+        """
 
         project_name = "grid_standard_basic_model_land_cover"
 

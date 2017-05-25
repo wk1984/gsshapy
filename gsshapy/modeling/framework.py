@@ -7,20 +7,25 @@
 #  BSD 3-Clause
 
 from datetime import datetime
+from distutils.spawn import find_executable
 from glob import glob
+import logging
 import os
 from shutil import copy, move
 import subprocess
 
+log = logging.getLogger(__name__)
+
 try:
     from spt_dataset_manager import ECMWFRAPIDDatasetManager
 except ImportError:
-    print("WARNING: spt_dataset_manager is not installed. The SPT functionality will not work.")
+    log.warn("spt_dataset_manager is not installed. The SPT functionality will not work.")
     pass
 
 from ..lib import db_tools as dbt
-from ..orm import ProjectCard, ProjectFile
+from ..orm import ProjectFile
 from .event import EventMode, LongTermMode
+
 
 def replace_file(from_file, to_file):
     """
@@ -57,6 +62,7 @@ class GSSHAFramework(object):
         gssha_simulation_start(Optional[datetime]): Datetime object with date of start of GSSHA simulation.
         gssha_simulation_end(Optional[datetime]): Datetime object with date of end of GSSHA simulation.
         gssha_simulation_duration(Optional[timedelta]): Datetime timedelta object with duration of GSSHA simulation.
+        load_simulation_datetime(Optional[bool]): If True, this will load in datetime information from the project file. Default is False.
         spt_watershed_name(Optional[str]): Streamflow Prediction Tool watershed name.
         spt_subbasin_name(Optional[str]): Streamflow Prediction Tool subbasin name.
         spt_forecast_date_string(Optional[str]): Streamflow Prediction Tool forecast date string.
@@ -65,15 +71,17 @@ class GSSHAFramework(object):
         ckan_owner_organization(Optional[str]): CKAN owner organization.
         path_to_rapid_qout(Optional[str]): Path to the RAPID Qout file. Use this if you do NOT want to download the forecast and you want to use RAPID streamflows.
         connection_list_file(Optional[str]): CSV file with list connecting GSSHA rivers to RAPID river network. See: http://rapidpy.readthedocs.io/en/latest/rapid_to_gssha.html
-        lsm_folder(Optional[str]): Path to folder with land surface model data. See: *lsm_input_folder_path* variable at :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA`.
-        lsm_data_var_map_array(Optional[str]): Array with connections for LSM output and GSSHA input. See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA.`
-        lsm_precip_data_var(Optional[list or str]): String of name for precipitation variable name or list of precip variable names.  See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
-        lsm_precip_type(Optional[str]): Type of precipitation. See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
-        lsm_lat_var(Optional[str]): Name of the latitude variable in the LSM netCDF files. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_lon_var(Optional[str]): Name of the longitude variable in the LSM netCDF files. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_file_date_naming_convention(Optional[str]): Array with connections for LSM output and GSSHA input. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_time_var(Optional[str]): Name of the time variable in the LSM netCDF files. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_search_card(Optional[str]): Glob search pattern for LSM files. See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA`.
+        lsm_folder(Optional[str]): Path to folder with land surface model data. See: *lsm_input_folder_path* variable at :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_data_var_map_array(Optional[str]): Array with connections for LSM output and GSSHA input. See: :func:`~gsshapy.grid.GRIDtoGSSHA.`
+        lsm_precip_data_var(Optional[list or str]): String of name for precipitation variable name or list of precip variable names.  See: :func:`~gsshapy.grid.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
+        lsm_precip_type(Optional[str]): Type of precipitation. See: :func:`~gsshapy.grid.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
+        lsm_lat_var(Optional[str]): Name of the latitude variable in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_lon_var(Optional[str]): Name of the longitude variable in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_time_var(Optional[str]): Name of the time variable in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_lat_dim(Optional[str]): Name of the latitude dimension in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_lon_dim(Optional[str]): Name of the longitude dimension in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_time_dim(Optional[str]): Name of the time dimension in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_search_card(Optional[str]): Glob search pattern for LSM files. See: :func:`~gsshapy.grid.grid_to_gssha.GRIDtoGSSHA`.
         precip_interpolation_type(Optional[str]): Type of interpolation for LSM precipitation. Can be "INV_DISTANCE" or "THIESSEN". Default is "THIESSEN".
         event_min_q(Optional[double]): Threshold discharge for continuing runoff events in m3/s. Default is 60.0.
         et_calc_mode(Optional[str]): Type of evapo-transpitation calculation for GSSHA. Can be "PENMAN" or "DEARDORFF". Default is "PENMAN".
@@ -82,6 +90,7 @@ class GSSHAFramework(object):
         write_hotstart(Optional[bool]): If you want to automatically generate all hotstart files, set to True. Default is False.
         read_hotstart(Optional[bool]): If you want to automatically search for and read in hotstart files, set to True. Default is False.
         hotstart_minimal_mode(Optional[bool]): If you want to turn off all outputs to only generate the hotstart file, set to True. Default is False.
+        grid_module(:obj:`str`): The name of the LSM tool needed. Options are 'grid', 'hrrr', or 'era'. Default is 'grid'.
 
     Example modifying parameters during class initialization:
 
@@ -92,7 +101,6 @@ class GSSHAFramework(object):
             gssha_executable = 'C:/Program Files/WMS 10.1 64-bit/gssha/gssha.exe'
             gssha_directory = "C:/Users/{username}/Documents/GSSHA"
             project_filename = "gssha_project.prj"
-            connection_list_file = "C:/Users/{username}/Documents/GSSHA/rapid_to_gssha_connect.csv"
 
             #WRF INPUTS
             lsm_folder = '"C:/Users/{username}/Documents/GSSHA/wrf-sample-data-v1.0'
@@ -101,7 +109,6 @@ class GSSHAFramework(object):
             search_card = '*.nc'
             precip_data_var = ['RAINC', 'RAINNC']
             precip_type = 'ACCUM'
-            lsm_file_date_naming_convention='gssha_d02_%Y_%m_%d_%H_%M_%S.nc'
 
             data_var_map_array = [
                                   ['precipitation_acc', ['RAINC', 'RAINNC']],
@@ -118,20 +125,12 @@ class GSSHAFramework(object):
             gr = GSSHAFramework(gssha_executable,
                                 gssha_directory,
                                 project_filename,
-                                ckan_engine_url='http://ckan/api/3/action',
-                                ckan_api_key='your-api-key',
-                                ckan_owner_organization='your_organization',
-                                spt_watershed_name='watershed_name',
-                                spt_subbasin_name='subbasin_name',
-                                spt_forecast_date_string='20160721.1200'
                                 lsm_folder=lsm_folder,
                                 lsm_data_var_map_array=data_var_map_array,
                                 lsm_precip_data_var=precip_data_var,
                                 lsm_precip_type=precip_type,
                                 lsm_lat_var=lsm_lat_var,
                                 lsm_lon_var=lsm_lon_var,
-                                lsm_file_date_naming_convention=lsm_file_date_naming_convention,
-                                connection_list_file=connection_list_file,
                                 )
 
             gr.run_forecast()
@@ -179,20 +178,16 @@ class GSSHAFramework(object):
                                         )
     GSSHA_OPTIONAL_OUTPUT_CARDS = (
                                   "IN_THETA_LOCATION",
-                                  "IN_HYD_LOCATION", "IN_SED_LOC",
+                                  "IN_HYD_LOCATION",
+                                  "IN_SED_LOC",
                                   "OVERLAND_DEPTH_LOCATION",
                                   "OVERLAND_WSE_LOCATION",
-                                  "IN_GWFLUX_LOCATION", "OUT_WELL_LOCATION",
+                                  "IN_GWFLUX_LOCATION",
+                                  "OUT_WELL_LOCATION",
                                   "STRICT_JULIAN_DATE",
-                                  "OPTIMIZE", "OPTIMIZE_SED",
+                                  "OPTIMIZE",
+                                  "OPTIMIZE_SED",
                                   ) + GSSHA_OPTIONAL_OUTPUT_PATH_CARDS
-
-    SIMULATION_RUN_MODIFIED_INPUT_CARDS = ("HMET_ASCII",
-                                           "HMET_NETCDF",
-                                           "CHAN_POINT_INPUT",
-                                           "PRECIP_FILE",
-                                           "MAPPING_TABLE",
-                                           )
 
     def __init__(self,
                  gssha_executable,
@@ -201,6 +196,7 @@ class GSSHAFramework(object):
                  gssha_simulation_start=None,
                  gssha_simulation_end=None,
                  gssha_simulation_duration=None,
+                 load_simulation_datetime=False,
                  spt_watershed_name=None,
                  spt_subbasin_name=None,
                  spt_forecast_date_string=None,
@@ -215,8 +211,10 @@ class GSSHAFramework(object):
                  lsm_precip_type=None,
                  lsm_lat_var=None,
                  lsm_lon_var=None,
-                 lsm_file_date_naming_convention=None,
                  lsm_time_var='time',
+                 lsm_lat_dim=None,
+                 lsm_lon_dim=None,
+                 lsm_time_dim='time',
                  lsm_search_card="*.nc",
                  precip_interpolation_type=None,
                  event_min_q=None,
@@ -226,6 +224,7 @@ class GSSHAFramework(object):
                  write_hotstart=False,
                  read_hotstart=False,
                  hotstart_minimal_mode=False,
+                 grid_module='grid',
                  ):
         """
         Initializer
@@ -245,16 +244,12 @@ class GSSHAFramework(object):
         self.lsm_data_var_map_array = lsm_data_var_map_array
         self.lsm_precip_data_var = lsm_precip_data_var
         self.lsm_precip_type = lsm_precip_type
-        self.lsm_lat_var = lsm_lat_var
-        self.lsm_lon_var = lsm_lon_var
-        self.lsm_file_date_naming_convention = lsm_file_date_naming_convention
-        self.lsm_time_var = lsm_time_var
-        self.lsm_search_card = lsm_search_card
         self.output_netcdf = output_netcdf
         self.write_hotstart = write_hotstart
         self.read_hotstart = read_hotstart
         self.hotstart_minimal_mode = hotstart_minimal_mode
 
+        self.simulation_modified_input_cards = ["MAPPING_TABLE"]
         # make sure execting from GSSHA project directory
         os.chdir(self.gssha_directory)
 
@@ -272,39 +267,89 @@ class GSSHAFramework(object):
                                   filename=self.project_filename,
                                   session=self.db_session)
 
-        if not self._connect_to_lsm():
-            self.event_manager = EventMode(project_manager=self.project_manager,
-                                           db_session=self.db_session,
-                                           gssha_directory=self.gssha_directory,
-                                           simulation_start=gssha_simulation_start,
-                                           simulation_end=gssha_simulation_end,
-                                           simulation_duration=gssha_simulation_duration,
-                                          )
+
+        # read event manager card if exists
+        eventyml_card = self.project_manager.getCard('#GSSHAPY_EVENT_YML')
+        if eventyml_card is not None:
+            self.project_manager.readInputFile('#GSSHAPY_EVENT_YML',
+                                               directory=self.gssha_directory,
+                                               session=self.db_session)
+        # generate event manager card if does not exist already
         else:
+            prj_evt_manager = self.project_manager.INPUT_FILES['#GSSHAPY_EVENT_YML']()
+            self.db_session.add(prj_evt_manager)
+            prj_evt_manager.projectFile = self.project_manager
+            prj_evt_manager.write(directory=self.gssha_directory,
+                                  name='gsshapy_event.yml',
+                                  session=self.db_session)
+            self.project_manager.setCard(name='#GSSHAPY_EVENT_YML',
+                                         value='gsshapy_event.yml',
+                                         add_quotes=True)
+            self.project_manager.write(directory=self.gssha_directory,
+                                       name=self.project_filename,
+                                       session=self.db_session)
+            self.db_session.commit()
+
+        required_grid_args = (grid_module, lsm_folder, lsm_search_card,
+                              lsm_lat_var, lsm_lon_var, lsm_time_var,
+                              lsm_lat_dim, lsm_lon_dim, lsm_time_dim)
+
+        self.lsm_input_valid = None not in required_grid_args
+
+        if self._prepare_lsm_hmet:
             self.event_manager = LongTermMode(project_manager=self.project_manager,
                                               db_session=self.db_session,
                                               gssha_directory=self.gssha_directory,
                                               simulation_start=gssha_simulation_start,
                                               simulation_end=gssha_simulation_end,
                                               simulation_duration=gssha_simulation_duration,
+                                              load_simulation_datetime=load_simulation_datetime,
+                                              lsm_folder=lsm_folder,
+                                              lsm_search_card=lsm_search_card,
+                                              lsm_lat_var=lsm_lat_var,
+                                              lsm_lon_var=lsm_lon_var,
+                                              lsm_time_var=lsm_time_var,
+                                              lsm_lat_dim=lsm_lat_dim,
+                                              lsm_lon_dim=lsm_lon_dim,
+                                              lsm_time_dim=lsm_time_dim,
+                                              grid_module=grid_module,
                                               event_min_q=event_min_q,
                                               et_calc_mode=et_calc_mode,
-                                              soil_moisture_depth=soil_moisture_depth,
-                                             )
+                                              soil_moisture_depth=soil_moisture_depth)
+        else:
+            self.event_manager = EventMode(project_manager=self.project_manager,
+                                           db_session=self.db_session,
+                                           gssha_directory=self.gssha_directory,
+                                           simulation_start=gssha_simulation_start,
+                                           simulation_end=gssha_simulation_end,
+                                           simulation_duration=gssha_simulation_duration,
+                                           load_simulation_datetime=load_simulation_datetime,
+                                           lsm_folder=lsm_folder,
+                                           lsm_search_card=lsm_search_card,
+                                           lsm_lat_var=lsm_lat_var,
+                                           lsm_lon_var=lsm_lon_var,
+                                           lsm_time_var=lsm_time_var,
+                                           lsm_lat_dim=lsm_lat_dim,
+                                           lsm_lon_dim=lsm_lon_dim,
+                                           lsm_time_dim=lsm_time_dim,
+                                           grid_module=grid_module)
 
-
-    def _connect_to_lsm(self):
+    @property
+    def _prepare_lsm_hmet(self):
         '''
-        Determines whether to connect to LSM
+        Determines whether to prepare HMET data from LSM
         '''
-        # skip self.lsm_data_var_map_array because default in WRF Simulation
-        lsm_required_vars =  (self.lsm_folder, self.lsm_precip_data_var,
-                              self.lsm_precip_type, self.lsm_lat_var,
-                              self.lsm_lon_var,
-                              self.lsm_file_date_naming_convention,
-                              self.lsm_time_var, self.lsm_search_card)
+        return self.lsm_input_valid and self.lsm_data_var_map_array
 
-        return (None not in lsm_required_vars)
+    @property
+    def _prepare_lsm_gag(self):
+        '''
+        Determines whether to prepare gage data from LSM
+        '''
+        lsm_required_vars =  (self.lsm_precip_data_var,
+                              self.lsm_precip_type)
+
+        return self.lsm_input_valid and (None not in lsm_required_vars)
 
     def _update_class_var(self, var_name, new_value):
         """
@@ -339,7 +384,7 @@ class GSSHAFramework(object):
                 try:
                     move(original_location, new_location)
                 except OSError as ex:
-                    print(ex)
+                    log.warn(ex)
                     pass
 
     def download_spt_forecast(self, extract_directory):
@@ -367,144 +412,18 @@ class GSSHAFramework(object):
             return glob(os.path.join(extract_directory, self.spt_forecast_date_string, "Qout*52.nc"))[0]
 
         elif needed_vars.count(None) == len(needed_vars):
-            print("Skipping streamflow forecast download ...")
+            log.info("Skipping streamflow forecast download ...")
             return None
         else:
             raise ValueError("To download the forecasts, you need to set: \n"
                              "spt_watershed_name, spt_subbasin_name, spt_forecast_date_string \n"
                              "ckan_engine_url, ckan_api_key, and ckan_owner_organization."
                              )
-
-    def download_wrf_forecast(self):
+    def prepare_hmet(self):
         """
-        Downloads WRF forecast data
+        Prepare HMET data for simulation
         """
-        # TODO: Download WRF Forecasts
-        return
-
-    def run(self):
-        """
-        Write out project file and run GSSHA simulation
-        """
-        if self.hotstart_minimal_mode:
-            # remove all optional output cards
-            for gssha_optional_output_card in self.GSSHA_OPTIONAL_OUTPUT_CARDS:
-                self._delete_card(gssha_optional_output_card)
-            # make sure running in SUPER_QUIET mode
-            self._update_card('SUPER_QUIET', '')
-            # give execute folder name
-            timestamp_out_dir_name = "minimal_hotstart_run_{0}to{1}".format(self.event_manager.simulation_start.strftime("%Y%m%d%H%M"),
-                                                                            self.event_manager.simulation_end.strftime("%Y%m%d%H%M"))
-        else:
-            # give execute folder name
-            timestamp_out_dir_name = "run_{0}to{1}".format(self.event_manager.simulation_start.strftime("%Y%m%d%H%M"),
-                                                           self.event_manager.simulation_end.strftime("%Y%m%d%H%M"))
-
-        # make working directory
-        working_directory = os.path.join(self.gssha_directory, timestamp_out_dir_name)
-        try:
-            os.mkdir(working_directory)
-        except OSError:
-            pass
-
-        # move simulation generated files to working directory
-        # PRECIP_FILE, HMET_NETCDF, HMET_ASCII, CHAN_POINT_INPUT
-        # TODO: Move HMET_ASCII files
-        self._update_card_file_location("PRECIP_FILE", working_directory)
-        self._update_card_file_location("CHAN_POINT_INPUT", working_directory)
-        self._update_card_file_location("HMET_NETCDF", working_directory)
-        self._update_card_file_location("HMET_ASCII", working_directory)
-
-        mapping_table_card = self.project_manager.getCard('MAPPING_TABLE')
-        if mapping_table_card:
-            # read in mapping table
-            map_table_filepath = mapping_table_card.value.strip('"').strip("'")
-            map_table_filename = os.path.basename(map_table_filepath)
-            map_table_root_name, map_table_extension = os.path.splitext(map_table_filename)
-
-            map_table_object = self.project_manager.INPUT_FILES['MAPPING_TABLE']()
-            map_table_object.projectFile = self.project_manager
-            map_table_object._read(self.gssha_directory,
-                                   map_table_filename,
-                                   self.db_session,
-                                   map_table_filepath,
-                                   map_table_root_name,
-                                   map_table_extension,
-                                   readIndexMaps=False)
-
-            # connect index maps to main gssha directory
-            for indexMap in map_table_object.indexMaps:
-                indexMap.filename = os.path.join("..", os.path.basename(indexMap.filename))
-
-            # write copy of mapping table to working directory
-            mapping_table_new_path = os.path.join(working_directory, map_table_filename)
-            with open(mapping_table_new_path, 'w') as mapping_table_open_file:
-                map_table_object._write(session=self.db_session,
-                                        openFile=mapping_table_open_file,
-                                        writeIndexMaps=False)
-
-        # connect to other output files in main gssha directory
-        for gssha_card in self.project_manager.projectCards:
-            if gssha_card.name not in self.GSSHA_REQUIRED_OUTPUT_PATH_CARDS + \
-                                        self.GSSHA_OPTIONAL_OUTPUT_PATH_CARDS + \
-                                        self.SIMULATION_RUN_MODIFIED_INPUT_CARDS:
-                if gssha_card.value:
-                    updated_value = gssha_card.value.strip('"').strip("'")
-                    if updated_value:
-                        if os.path.exists(updated_value):
-                            updated_path = os.path.join("..", os.path.basename(updated_value))
-                            gssha_card.value = '"{0}"'.format(updated_path)
-                        elif gssha_card.name == '#INDEXGRID_GUID':
-                            path_split = updated_value.split()
-                            updated_path = os.path.basename(path_split[0].strip('"').strip("'"))
-                            if os.path.exists(updated_path):
-                                new_path = os.path.join("..", os.path.basename(updated_path))
-                                try:
-                                    # Get WMS ID for Index Map as part of value
-                                    gssha_card.value = '"{0}" "{1}"'.format(new_path, path_split[1])
-                                except:
-                                    # Like normal if the ID isn't there
-                                    gssha_card.value = '"{0}"'.format(new_path)
-                            else:
-                                print("WARNING: {0} {1} not found in project directory ...".format("#INDEXGRID_GUID", updated_path))
-
-        # make sure project path is ""
-        self._update_card("PROJECT_PATH", "", True)
-
-        # make execute directory main working directory
-        os.chdir(working_directory)
-
-        # WRITE OUT UPDATED GSSHA PROJECT FILE
-        self.project_manager.write(session=self.db_session,
-                                   directory=working_directory,
-                                   name=self.project_manager.name)
-
-        # RUN SIMULATION
-        if self.gssha_executable and os.path.exists(self.gssha_executable):
-            print("RUNNING GSSHA SIMULATION ...")
-
-            run_gssha_command = [self.gssha_executable,
-                                 os.path.join(working_directory, self.project_filename)]
-
-            try:
-                out = subprocess.check_output(run_gssha_command)
-                for line in out.split(b'\n'):
-                    print(line)
-            except subprocess.CalledProcessError as ex:
-                print("ERROR {0}: {1}".format(ex.returncode, ex.output))
-        else:
-            print("GSSHA EXECTUABLE NOT FOUND. SKIPPING GSSHA SIMULATION RUN ...")
-
-    def run_forecast(self):
-
-        """
-        Updates card & runs for RAPID to GSSHA & LSM to GSSHA
-        """
-        # ----------------------------------------------------------------------
-        # LSM to GSSHA
-        # ----------------------------------------------------------------------
-        if self._connect_to_lsm():
-            self.download_wrf_forecast()
+        if self._prepare_lsm_hmet:
             netcdf_file_path = None
             hmet_ascii_output_folder = None
             if self.output_netcdf:
@@ -516,22 +435,29 @@ class GSSHAFramework(object):
                 if self.hotstart_minimal_mode:
                     hmet_ascii_output_folder += "_hotstart"
 
-            self.event_manager.prepare_wrf_data(self.lsm_folder,
-                                                self.lsm_data_var_map_array,
-                                                self.lsm_precip_data_var,
-                                                self.lsm_precip_type,
-                                                self.lsm_lat_var,
-                                                self.lsm_lon_var,
-                                                self.lsm_file_date_naming_convention,
-                                                self.lsm_time_var,
-                                                self.lsm_search_card,
+            self.event_manager.prepare_hmet_lsm(self.lsm_data_var_map_array,
                                                 hmet_ascii_output_folder,
-                                                netcdf_file_path,
-                                                )
+                                                netcdf_file_path)
+            self.simulation_modified_input_cards += ["HMET_NETCDF",
+                                                     "HMET_ASCII"]
+        else:
+            log.info("HMET preparation skipped due to missing parameters ...")
 
-        # ----------------------------------------------------------------------
-        # RAPID to GSSHA
-        # ----------------------------------------------------------------------
+    def prepare_gag(self):
+        """
+        Prepare gage data for simulation
+        """
+        if self._prepare_lsm_gag:
+            self.event_manager.prepare_gag_lsm(self.lsm_precip_data_var,
+                                               self.lsm_precip_type)
+            self.simulation_modified_input_cards.append("PRECIP_FILE")
+        else:
+            log.info("Gage file preparation skipped due to missing parameters ...")
+
+    def rapid_to_gssha(self):
+        """
+        Prepare RAPID data for simulation
+        """
         # if no streamflow given, download forecast
         if self.path_to_rapid_qout is None and self.connection_list_file:
             rapid_qout_directory = os.path.join(self.gssha_directory, 'rapid_streamflow')
@@ -545,10 +471,12 @@ class GSSHAFramework(object):
         if self.path_to_rapid_qout is not None and self.connection_list_file:
             self.event_manager.prepare_rapid_streamflow(self.path_to_rapid_qout,
                                                         self.connection_list_file)
+            self.simulation_modified_input_cards.append('CHAN_POINT_INPUT')
 
-        # ----------------------------------------------------------------------
-        # HOTSTART
-        # ----------------------------------------------------------------------
+    def hotstart(self):
+        """
+        Prepare simulation hotstart info
+        """
         if self.write_hotstart:
             hotstart_time_str = self.event_manager.simulation_end.strftime("%Y%m%d_%H%M")
             try:
@@ -583,8 +511,8 @@ class GSSHAFramework(object):
                 self._update_card("READ_OV_HOTSTART", os.path.join("..", expected_ov_hotstart), True)
             else:
                 self._delete_card("READ_OV_HOTSTART")
-                print("WARNING: READ_OV_HOTSTART not included as "
-                      "{0} does not exist ...".format(expected_ov_hotstart))
+                log.warn("READ_OV_HOTSTART not included as "
+                         "{0} does not exist ...".format(expected_ov_hotstart))
 
             # CHANNEL
             expected_chan_hotstart = os.path.join('hotstart',
@@ -595,8 +523,8 @@ class GSSHAFramework(object):
                 self._update_card("READ_CHAN_HOTSTART", os.path.join("..", expected_chan_hotstart), True)
             else:
                 self._delete_card("READ_CHAN_HOTSTART")
-                print("WARNING: READ_CHAN_HOTSTART not included as "
-                      "{0}.qht and/or {0}.dht does not exist ...".format(expected_chan_hotstart))
+                log.warn("READ_CHAN_HOTSTART not included as "
+                         "{0}.qht and/or {0}.dht does not exist ...".format(expected_chan_hotstart))
 
             # INFILTRATION
             expected_sm_hotstart = os.path.join('hotstart',
@@ -606,16 +534,170 @@ class GSSHAFramework(object):
                 self._update_card("READ_SM_HOTSTART", os.path.join("..", expected_sm_hotstart), True)
             else:
                 self._delete_card("READ_SM_HOTSTART")
-                print("WARNING: READ_SM_HOTSTART not included as"
-                      " {0} does not exist ...".format(expected_sm_hotstart))
+                log.warn("READ_SM_HOTSTART not included as"
+                         " {0} does not exist ...".format(expected_sm_hotstart))
+
+    def run(self, subdirectory=None):
+        """
+        Write out project file and run GSSHA simulation
+        """
+        if self.hotstart_minimal_mode:
+            # remove all optional output cards
+            for gssha_optional_output_card in self.GSSHA_OPTIONAL_OUTPUT_CARDS:
+                self._delete_card(gssha_optional_output_card)
+            # make sure running in SUPER_QUIET mode
+            self._update_card('SUPER_QUIET', '')
+            if subdirectory is None:
+                # give execute folder name
+                subdirectory = "minimal_hotstart_run_{0}to{1}" \
+                               .format(self.event_manager.simulation_start.strftime("%Y%m%d%H%M"),
+                                       self.event_manager.simulation_end.strftime("%Y%m%d%H%M"))
+        else:
+            # give execute folder name
+            subdirectory = "run_{0}to{1}".format(self.event_manager.simulation_start.strftime("%Y%m%d%H%M"),
+                                                 self.event_manager.simulation_end.strftime("%Y%m%d%H%M"))
+
+
+        # ensure unique folder naming conventions and add to exisitng event manager
+        prj_evt_manager = self.project_manager.projectFileEventManager
+        prj_event = prj_evt_manager.add_event(name=subdirectory,
+                                              subfolder=subdirectory,
+                                              session=self.db_session)
+        eventyml_path = self.project_manager.getCard('#GSSHAPY_EVENT_YML') \
+                                            .value.strip("'").strip('"')
+        prj_evt_manager.write(session=self.db_session,
+                              directory=self.gssha_directory,
+                              name=os.path.basename(eventyml_path))
+        # ensure event manager not propagated to child event
+        self.project_manager.deleteCard('#GSSHAPY_EVENT_YML',
+                                        db_session=self.db_session)
+        self.db_session.delete(self.project_manager.projectFileEventManager)
+        self.db_session.commit()
+
+        # make working directory
+        working_directory = os.path.join(self.gssha_directory, prj_event.subfolder)
+        try:
+            os.mkdir(working_directory)
+        except OSError:
+            pass
+
+        # move simulation generated files to working directory
+        # PRECIP_FILE, HMET_NETCDF, HMET_ASCII, CHAN_POINT_INPUT
+        # TODO: Move HMET_ASCII files
+        for sim_card in self.simulation_modified_input_cards:
+            if sim_card != 'MAPPING_TABLE':
+                self._update_card_file_location(sim_card, working_directory)
+
+        mapping_table_card = self.project_manager.getCard('MAPPING_TABLE')
+        if mapping_table_card:
+            # read in mapping table
+            map_table_object = self.project_manager.readInputFile('MAPPING_TABLE',
+                                                                  self.gssha_directory,
+                                                                  self.db_session,
+                                                                  readIndexMaps=False)
+
+            # connect index maps to main gssha directory
+            for indexMap in map_table_object.indexMaps:
+                indexMap.filename = os.path.join("..", os.path.basename(indexMap.filename))
+
+            # write copy of mapping table to working directory
+            map_table_filename = os.path.basename(mapping_table_card.value.strip("'").strip('"'))
+            map_table_object.write(session=self.db_session,
+                                   directory=working_directory,
+                                   name=map_table_filename,
+                                   writeIndexMaps=False)
+
+        # connect to other output files in main gssha directory
+        for gssha_card in self.project_manager.projectCards:
+            if gssha_card.name not in self.GSSHA_REQUIRED_OUTPUT_PATH_CARDS + \
+                                        self.GSSHA_OPTIONAL_OUTPUT_PATH_CARDS + \
+                                        tuple(self.simulation_modified_input_cards):
+                if gssha_card.value:
+                    updated_value = gssha_card.value.strip('"').strip("'")
+                    if updated_value:
+                        if os.path.exists(updated_value):
+                            updated_path = os.path.join("..", os.path.basename(updated_value))
+                            gssha_card.value = '"{0}"'.format(updated_path)
+                        elif gssha_card.name == '#INDEXGRID_GUID':
+                            path_split = updated_value.split()
+                            updated_path = os.path.basename(path_split[0].strip('"').strip("'"))
+                            if os.path.exists(updated_path):
+                                new_path = os.path.join("..", os.path.basename(updated_path))
+                                try:
+                                    # Get WMS ID for Index Map as part of value
+                                    gssha_card.value = '"{0}" "{1}"'.format(new_path, path_split[1])
+                                except:
+                                    # Like normal if the ID isn't there
+                                    gssha_card.value = '"{0}"'.format(new_path)
+                            else:
+                                log.warn("{0} {1} not found in project directory ...".format("#INDEXGRID_GUID", updated_path))
+
+        # make sure project path is ""
+        self._update_card("PROJECT_PATH", "", True)
+
+        # make execute directory main working directory
+        os.chdir(working_directory)
+
+        # WRITE OUT UPDATED GSSHA PROJECT FILE
+        self.project_manager.write(session=self.db_session,
+                                   directory=working_directory,
+                                   name=self.project_manager.name)
+
+        # RUN SIMULATION
+        if self.gssha_executable and find_executable(self.gssha_executable) is not None:
+            log.info("Running GSSHA simulation ...")
+
+            try:
+                run_gssha_command = [self.gssha_executable,
+                                     os.path.join(working_directory, self.project_filename)]
+                # run GSSHA
+                out = subprocess.check_output(run_gssha_command)
+
+                # write out GSSHA output
+                log_file_path = os.path.join(working_directory, 'simulation.log')
+                with open(log_file_path, mode='w') as logfile:
+                    logfile.write(out.decode('utf-8'))
+                    # log to other logger if debug mode on
+                    if log.isEnabledFor(logging.DEBUG):
+                        for line in out.split(b'\n'):
+                            log.debug(line.decode('utf-8'))
+
+            except subprocess.CalledProcessError as ex:
+                log.error("{0}: {1}".format(ex.returncode, ex.output))
+
+        else:
+            log.warning("GSSHA executable not found. Skipping GSSHA simulation run ...")
+
+        return working_directory
+
+    def run_forecast(self):
+
+        """
+        Updates card & runs for RAPID to GSSHA & LSM to GSSHA
+        """
+        # ----------------------------------------------------------------------
+        # LSM to GSSHA
+        # ----------------------------------------------------------------------
+        self.prepare_hmet()
+        self.prepare_gag()
+
+        # ----------------------------------------------------------------------
+        # RAPID to GSSHA
+        # ----------------------------------------------------------------------
+        self.rapid_to_gssha()
+
+        # ----------------------------------------------------------------------
+        # HOTSTART
+        # ----------------------------------------------------------------------
+        self.hotstart()
 
         # ----------------------------------------------------------------------
         # Run GSSHA
         # ----------------------------------------------------------------------
-        self.run()
+        return self.run()
 
 
-class GSSHA_WRF_Framework(GSSHAFramework):
+class GSSHAWRFFramework(GSSHAFramework):
     """
     This class is for automating the connection between RAPID to GSSHA and WRF to GSSHA.
     There are several different configurations depending upon what you choose.
@@ -639,6 +721,7 @@ class GSSHA_WRF_Framework(GSSHAFramework):
         gssha_simulation_start(Optional[datetime]): Datetime object with date of start of GSSHA simulation.
         gssha_simulation_end(Optional[datetime]): Datetime object with date of end of GSSHA simulation.
         gssha_simulation_duration(Optional[timedelta]): Datetime timedelta object with duration of GSSHA simulation.
+        load_simulation_datetime(Optional[bool]): If True, this will load in datetime information from the project file. Default is False.
         spt_watershed_name(Optional[str]): Streamflow Prediction Tool watershed name.
         spt_subbasin_name(Optional[str]): Streamflow Prediction Tool subbasin name.
         spt_forecast_date_string(Optional[str]): Streamflow Prediction Tool forecast date string.
@@ -647,15 +730,17 @@ class GSSHA_WRF_Framework(GSSHAFramework):
         ckan_owner_organization(Optional[str]): CKAN owner organization.
         path_to_rapid_qout(Optional[str]): Path to the RAPID Qout file. Use this if you do NOT want to download the forecast and you want to use RAPID streamflows.
         connection_list_file(Optional[str]): CSV file with list connecting GSSHA rivers to RAPID river network. See: http://rapidpy.readthedocs.io/en/latest/rapid_to_gssha.html
-        lsm_folder(Optional[str]): Path to folder with land surface model data. See: *lsm_input_folder_path* variable at :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA`.
-        lsm_data_var_map_array(Optional[str]): Array with connections for WRF output and GSSHA input. See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA.`
-        lsm_precip_data_var(Optional[list or str]): String of name for precipitation variable name or list of precip variable names.  See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
-        lsm_precip_type(Optional[str]): Type of precipitation. See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
-        lsm_lat_var(Optional[str]): Name of the latitude variable in the WRF netCDF files. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_lon_var(Optional[str]): Name of the longitude variable in the WRF netCDF files. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_file_date_naming_convention(Optional[str]): Array with connections for WRF output and GSSHA input. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_time_var(Optional[str]): Name of the time variable in the WRF netCDF files. See: :func:`~gridtogssha.LSMtoGSSHA`.
-        lsm_search_card(Optional[str]): Glob search pattern for WRF files. See: :func:`~gridtogssha.grid_to_gssha.GRIDtoGSSHA`.
+        lsm_folder(Optional[str]): Path to folder with land surface model data. See: *lsm_input_folder_path* variable at :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_data_var_map_array(Optional[str]): Array with connections for WRF output and GSSHA input. See: :func:`~gsshapy.grid.GRIDtoGSSHA.`
+        lsm_precip_data_var(Optional[list or str]): String of name for precipitation variable name or list of precip variable names.  See: :func:`~gsshapy.grid.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
+        lsm_precip_type(Optional[str]): Type of precipitation. See: :func:`~gsshapy.grid.GRIDtoGSSHA.lsm_precip_to_gssha_precip_gage`.
+        lsm_lat_var(Optional[str]): Name of the latitude variable in the WRF netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_lon_var(Optional[str]): Name of the longitude variable in the WRF netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_time_var(Optional[str]): Name of the time variable in the WRF netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_lat_dim(Optional[str]): Name of the latitude dimension in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_lon_dim(Optional[str]): Name of the longitude dimension in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_time_dim(Optional[str]): Name of the time dimension in the LSM netCDF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
+        lsm_search_card(Optional[str]): Glob search pattern for WRF files. See: :func:`~gsshapy.grid.GRIDtoGSSHA`.
         precip_interpolation_type(Optional[str]): Type of interpolation for WRF precipitation. Can be "INV_DISTANCE" or "THIESSEN". Default is "THIESSEN".
         event_min_q(Optional[double]): Threshold discharge for continuing runoff events in m3/s. Default is 60.0.
         et_calc_mode(Optional[str]): Type of evapo-transpitation calculation for GSSHA. Can be "PENMAN" or "DEARDORFF". Default is "PENMAN".
@@ -669,7 +754,7 @@ class GSSHA_WRF_Framework(GSSHAFramework):
 
     .. code:: python
 
-        from gsshapy.modeling import GSSHA_WRF_Framework
+        from gsshapy.modeling import GSSHAWRFFramework
 
         gssha_executable = 'C:/Program Files/WMS 10.1 64-bit/gssha/gssha.exe'
         gssha_directory = "C:/Users/{username}/Documents/GSSHA"
@@ -677,21 +762,19 @@ class GSSHA_WRF_Framework(GSSHAFramework):
 
         #LSM TO GSSHA
         lsm_folder = '"C:/Users/{username}/Documents/GSSHA/wrf-sample-data-v1.0'
-        lsm_file_date_naming_convention = 'gssha_d02_%Y_%m_%d_%H_%M_%S.nc'
 
         #RAPID TO GSSHA
         path_to_rapid_qout = "C:/Users/{username}/Documents/GSSHA/Qout.nc"
         connection_list_file = "C:/Users/{username}/Documents/GSSHA/rapid_to_gssha_connect.csv"
 
         #INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable,
-                                 gssha_directory,
-                                 project_filename,
-                                 lsm_folder=lsm_folder,
-                                 lsm_file_date_naming_convention=lsm_file_date_naming_convention,
-                                 path_to_rapid_qout=path_to_rapid_qout,
-                                 connection_list_file=connection_list_file,
-                                )
+        gr = GSSHAWRFFramework(gssha_executable,
+                               gssha_directory,
+                               project_filename,
+                               lsm_folder=lsm_folder,
+                               path_to_rapid_qout=path_to_rapid_qout,
+                               connection_list_file=connection_list_file,
+                               )
 
         gr.run_forecast()
 
@@ -699,7 +782,7 @@ class GSSHA_WRF_Framework(GSSHAFramework):
 
     .. code:: python
 
-        from gsshapy.modeling import GSSHA_WRF_Framework
+        from gsshapy.modeling import GSSHAWRFFramework
 
         gssha_executable = 'C:/Program Files/WMS 10.1 64-bit/gssha/gssha.exe'
         gssha_directory = "C:/Users/{username}/Documents/GSSHA"
@@ -707,7 +790,6 @@ class GSSHA_WRF_Framework(GSSHAFramework):
 
         #LSM TO GSSHA
         lsm_folder = '"C:/Users/{username}/Documents/GSSHA/wrf-sample-data-v1.0'
-        lsm_file_date_naming_convention = 'gssha_d02_%Y_%m_%d_%H_%M_%S.nc'
 
         #RAPID TO GSSHA
         connection_list_file = "C:/Users/{username}/Documents/GSSHA/rapid_to_gssha_connect.csv"
@@ -721,19 +803,18 @@ class GSSHA_WRF_Framework(GSSHAFramework):
         spt_forecast_date_string='20160721.1200'
 
         #INITIALIZE CLASS AND RUN
-        gr = GSSHA_WRF_Framework(gssha_executable,
-                                 gssha_directory,
-                                 project_filename,
-                                 lsm_folder=lsm_folder,
-                                 lsm_file_date_naming_convention=lsm_file_date_naming_convention,
-                                 connection_list_file=connection_list_file,
-                                 ckan_engine_url=ckan_engine_url,
-                                 ckan_api_key=ckan_api_key,
-                                 ckan_owner_organization=ckan_owner_organization,
-                                 spt_watershed_name=spt_watershed_name,
-                                 spt_subbasin_name=spt_subbasin_name,
-                                 spt_forecast_date_string=spt_forecast_date_string,
-                                )
+        gr = GSSHAWRFFramework(gssha_executable,
+                               gssha_directory,
+                               project_filename,
+                               lsm_folder=lsm_folder,
+                               connection_list_file=connection_list_file,
+                               ckan_engine_url=ckan_engine_url,
+                               ckan_api_key=ckan_api_key,
+                               ckan_owner_organization=ckan_owner_organization,
+                               spt_watershed_name=spt_watershed_name,
+                               spt_subbasin_name=spt_subbasin_name,
+                               spt_forecast_date_string=spt_forecast_date_string,
+                               )
 
         gr.run_forecast()
 
@@ -742,7 +823,7 @@ class GSSHA_WRF_Framework(GSSHAFramework):
     .. code:: python
 
         from datetime import datetime, timedelta
-        from gsshapy.modeling import GSSHA_WRF_Framework
+        from gsshapy.modeling import GSSHAWRFFramework
 
         gssha_executable = 'C:/Program Files/WMS 10.1 64-bit/gssha/gssha.exe'
         gssha_directory = "C:/Users/{username}/Documents/GSSHA"
@@ -752,7 +833,6 @@ class GSSHA_WRF_Framework(GSSHAFramework):
 
         #LSM
         lsm_folder = '"C:/Users/{username}/Documents/GSSHA/wrf-sample-data-v1.0'
-        lsm_file_date_naming_convention = 'gssha_d02_%Y_%m_%d_%H_%M_%S.nc'
 
         #RAPID
         path_to_rapid_qout = "C:/Users/{username}/Documents/GSSHA/Qout.nc"
@@ -761,33 +841,31 @@ class GSSHA_WRF_Framework(GSSHAFramework):
         #--------------------------------------------------------------------------
         # MAIN RUN
         #--------------------------------------------------------------------------
-        mr = GSSHA_WRF_Framework(gssha_executable,
-                                 gssha_directory,
-                                 project_filename,
-                                 lsm_folder=lsm_folder,
-                                 lsm_file_date_naming_convention=lsm_file_date_naming_convention,
-                                 path_to_rapid_qout=path_to_rapid_qout,
-                                 connection_list_file=connection_list_file,
-                                 gssha_simulation_duration=full_gssha_simulation_duration,
-                                 read_hotstart=True,
-                                )
+        mr = GSSHAWRFFramework(gssha_executable,
+                               gssha_directory,
+                               project_filename,
+                               lsm_folder=lsm_folder,
+                               path_to_rapid_qout=path_to_rapid_qout,
+                               connection_list_file=connection_list_file,
+                               gssha_simulation_duration=full_gssha_simulation_duration,
+                               read_hotstart=True,
+                               )
 
         mr.run_forecast()
         #--------------------------------------------------------------------------
         # GENERATE HOTSTART FOR NEXT RUN
         #--------------------------------------------------------------------------
-        hr = GSSHA_WRF_Framework(gssha_executable,
-                                 gssha_directory,
-                                 project_filename,
-                                 lsm_folder=lsm_folder,
-                                 lsm_file_date_naming_convention=lsm_file_date_naming_convention,
-                                 path_to_rapid_qout=path_to_rapid_qout,
-                                 connection_list_file=connection_list_file,
-                                 gssha_simulation_duration=gssha_hotstart_offset_duration,
-                                 write_hotstart=True,
-                                 read_hotstart=True,
-                                 hotstart_minimal_mode=True,
-                                )
+        hr = GSSHAWRFFramework(gssha_executable,
+                               gssha_directory,
+                               project_filename,
+                               lsm_folder=lsm_folder,
+                               path_to_rapid_qout=path_to_rapid_qout,
+                               connection_list_file=connection_list_file,
+                               gssha_simulation_duration=gssha_hotstart_offset_duration,
+                               write_hotstart=True,
+                               read_hotstart=True,
+                               hotstart_minimal_mode=True,
+                               )
         hr.run_forecast()
     """
 
@@ -798,6 +876,7 @@ class GSSHA_WRF_Framework(GSSHAFramework):
                  gssha_simulation_start=None,
                  gssha_simulation_end=None,
                  gssha_simulation_duration=None,
+                 load_simulation_datetime=False,
                  spt_watershed_name=None,
                  spt_subbasin_name=None,
                  spt_forecast_date_string=None,
@@ -812,8 +891,10 @@ class GSSHA_WRF_Framework(GSSHAFramework):
                  lsm_precip_type='ACCUM',
                  lsm_lat_var='XLAT',
                  lsm_lon_var='XLONG',
-                 lsm_file_date_naming_convention=None,
-                 lsm_time_var='time',
+                 lsm_time_var='Times',
+                 lsm_lat_dim='south_north',
+                 lsm_lon_dim='west_east',
+                 lsm_time_dim='Time',
                  lsm_search_card="*.nc",
                  precip_interpolation_type=None,
                  event_min_q=None,
@@ -839,14 +920,15 @@ class GSSHA_WRF_Framework(GSSHAFramework):
                                       ['cloud_cover' , 'CLDFRA'],
                                      ]
 
-        super(GSSHA_WRF_Framework, self).__init__(gssha_executable, gssha_directory, project_filename,
-                                                  gssha_simulation_start, gssha_simulation_end, gssha_simulation_duration,
-                                                  spt_watershed_name, spt_subbasin_name,
-                                                  spt_forecast_date_string, ckan_engine_url,
-                                                  ckan_api_key, ckan_owner_organization, path_to_rapid_qout,
-                                                  connection_list_file, lsm_folder, lsm_data_var_map_array,
-                                                  lsm_precip_data_var, lsm_precip_type, lsm_lat_var, lsm_lon_var,
-                                                  lsm_file_date_naming_convention, lsm_time_var,
-                                                  lsm_search_card, precip_interpolation_type, event_min_q,
-                                                  et_calc_mode, soil_moisture_depth, output_netcdf,
-                                                  write_hotstart, read_hotstart, hotstart_minimal_mode)
+        super(GSSHAWRFFramework, self).__init__(gssha_executable, gssha_directory, project_filename,
+                                                gssha_simulation_start, gssha_simulation_end,
+                                                gssha_simulation_duration, load_simulation_datetime,
+                                                spt_watershed_name, spt_subbasin_name,
+                                                spt_forecast_date_string, ckan_engine_url,
+                                                ckan_api_key, ckan_owner_organization, path_to_rapid_qout,
+                                                connection_list_file, lsm_folder, lsm_data_var_map_array,
+                                                lsm_precip_data_var, lsm_precip_type, lsm_lat_var, lsm_lon_var,
+                                                lsm_time_var, lsm_lat_dim, lsm_lon_dim, lsm_time_dim,
+                                                lsm_search_card, precip_interpolation_type, event_min_q,
+                                                et_calc_mode, soil_moisture_depth, output_netcdf,
+                                                write_hotstart, read_hotstart, hotstart_minimal_mode)

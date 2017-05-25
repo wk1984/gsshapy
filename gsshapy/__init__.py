@@ -3,12 +3,9 @@
 * Name: gsshapy
 * Author: Nathan Swain
 * Created On: Mar 18, 2013
-* Copyright: (c) Brigham Young University 2013
 * License: BSD 2-Clause
 ********************************************************************************
 """
+from .util import log_to_file, log_to_console, version
 
-
-def version():
-    return '2.1.0'
-
+__version__ = version()
